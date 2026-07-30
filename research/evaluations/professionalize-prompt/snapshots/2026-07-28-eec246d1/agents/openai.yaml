@@ -1,0 +1,4 @@
+interface:
+  display_name: "Professionalize and Execute"
+  short_description: "Turn rough requests into prompts, then execute"
+  default_prompt: "Use $professionalize-prompt to transform my rough request into an execution-ready prompt, then carry it out now."

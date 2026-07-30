@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "registry_id": "professionalize-prompt-workflows-v1",
+  "adoption_baseline": "B01_STATIC_MIN_1CALL",
+  "workflows": [
+    {
+      "workflow_id": "B00_RAW_1CALL",
+      "kind": "baseline",
+      "calls": 1,
+      "transformer": "none",
+      "executor_context": "original request plus authorized artifacts",
+      "purpose": "Measure model-native direct execution."
+    },
+    {
+      "workflow_id": "B01_STATIC_MIN_1CALL",
+      "kind": "baseline",
+      "calls": 1,
+      "transformer": "fixed minimal wrapper",
+      "frozen_instruction": "Identify the requested outcome, supplied context, explicit constraints, required output, and proportionate validation. Preserve supplied facts and do not invent missing consequential details. Then execute the request, following higher-priority instructions and reporting blockers honestly.",
+      "executor_context": "wrapper plus original request plus authorized artifacts",
+      "purpose": "Adoption baseline controlling for a concise professional specification."
+    },
+    {
+      "workflow_id": "B02_SHAM_2CALL",
+      "kind": "baseline",
+      "calls": 2,
+      "transformer": "verbatim delimiter wrapper",
+      "frozen_instruction": "Return the request and supplied context verbatim inside REQUEST and CONTEXT delimiters. Add no requirements, advice, questions, assumptions, or summary.",
+      "executor_context": "verbatim transformer output plus authorized artifacts",
+      "purpose": "Control for a second call and fresh executor."
+    },
+    {
+      "workflow_id": "B03_PRO_PROMPT_2CALL",
+      "kind": "candidate",
+      "calls": 2,
+      "transformer": "professionalize-prompt prompt-only",
+      "skill_snapshot_id": "professionalize-prompt@2026-07-28-eec246d1",
+      "executor_context": "professional prompt plus authorized artifacts only",
+      "purpose": "Estimate prompt-transformation effect independently of inline execution."
+    },
+    {
+      "workflow_id": "B04_PRO_INLINE_1CALL",
+      "kind": "candidate",
+      "calls": 1,
+      "transformer": "professionalize-prompt default prompt-plus-execute",
+      "skill_snapshot_id": "professionalize-prompt@2026-07-28-eec246d1",
+      "executor_context": "same model context",
+      "purpose": "Estimate deployed end-to-end effect."
+    },
+    {
+      "workflow_id": "B05_HUMAN_SPEC_UPPER",
+      "kind": "diagnostic-ceiling",
+      "calls": 2,
+      "transformer": "blinded human expert using behavior rubric v1",
+      "executor_context": "human prompt plus authorized artifacts only",
+      "purpose": "Estimate remaining headroom; never serve as adoption baseline."
+    }
+  ],
+  "ablations": [
+    {"workflow_id": "A01_NO_ADAPTIVE_STRUCTURE", "remove": "adaptive prompt structure", "parent": "B04_PRO_INLINE_1CALL"},
+    {"workflow_id": "A02_NO_CLARIFY_GATE", "remove": "question versus assumption router", "parent": "B04_PRO_INLINE_1CALL"},
+    {"workflow_id": "A03_NO_PRESERVE_GUARD", "remove": "preservation and no-invention rules", "parent": "B04_PRO_INLINE_1CALL", "synthetic_only": true},
+    {"workflow_id": "A04_NO_DOMAIN_ADAPT", "remove": "domain adaptation", "parent": "B04_PRO_INLINE_1CALL"},
+    {"workflow_id": "A05_NO_VALIDATION", "remove": "prompt and execution validation", "parent": "B04_PRO_INLINE_1CALL"},
+    {"workflow_id": "A06_NO_MODE_CONTRACT", "remove": "prompt-only and execute-only routing", "parent": "B04_PRO_INLINE_1CALL", "negative_control": true},
+    {"workflow_id": "A07_NO_MODEL_REFERENCE", "remove": "GPT-5.6 prompting reference", "parent": "B04_PRO_INLINE_1CALL"}
+  ]
+}

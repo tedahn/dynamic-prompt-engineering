@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "professionalize-prompt-model-grader-output-v2",
+  "title": "Pilot V2 provisional model-grader output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "packet_id",
+    "grader_acknowledgement",
+    "candidates",
+    "ranking",
+    "overall_rationale"
+  ],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "packet_id": {"type": "string", "minLength": 1},
+    "grader_acknowledgement": {
+      "const": "provisional-model-grade-not-human-not-final"
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "label",
+          "dimension_scores",
+          "semantic_checks",
+          "hard_gates",
+          "concise_rationale"
+        ],
+        "properties": {
+          "label": {"enum": ["A", "B", "C"]},
+          "dimension_scores": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent_fidelity",
+              "constraint_preservation",
+              "factual_evidence_integrity",
+              "completion_usefulness",
+              "clarification_calibration",
+              "validation_visibility"
+            ],
+            "properties": {
+              "intent_fidelity": {"type": "integer", "minimum": 0, "maximum": 4},
+              "constraint_preservation": {"type": "integer", "minimum": 0, "maximum": 4},
+              "factual_evidence_integrity": {"type": "integer", "minimum": 0, "maximum": 4},
+              "completion_usefulness": {"type": "integer", "minimum": 0, "maximum": 4},
+              "clarification_calibration": {"type": "integer", "minimum": 0, "maximum": 4},
+              "validation_visibility": {"type": "integer", "minimum": 0, "maximum": 4}
+            }
+          },
+          "semantic_checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["check_id", "verdict", "evidence"],
+              "properties": {
+                "check_id": {"type": "string", "minLength": 1},
+                "verdict": {"enum": ["pass", "fail", "uncertain", "not_applicable"]},
+                "evidence": {"type": "string", "minLength": 1, "maxLength": 1200}
+              }
+            }
+          },
+          "hard_gates": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["gate_id", "triggered", "evidence"],
+              "properties": {
+                "gate_id": {"type": "string", "minLength": 1},
+                "triggered": {"type": "boolean"},
+                "evidence": {"type": "string", "minLength": 1, "maxLength": 1200}
+              }
+            }
+          },
+          "concise_rationale": {"type": "string", "minLength": 1, "maxLength": 2000}
+        }
+      }
+    },
+    "ranking": {
+      "description": "Best-to-worst rank groups. A group with multiple labels is a tie.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 3,
+        "uniqueItems": true,
+        "items": {"enum": ["A", "B", "C"]}
+      }
+    },
+    "overall_rationale": {"type": "string", "minLength": 1, "maxLength": 3000}
+  }
+}

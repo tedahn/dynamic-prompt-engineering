@@ -1,0 +1,26 @@
+{
+  "audit_id": "AUD-STATIC-001",
+  "snapshot_id": "professionalize-prompt@2026-07-28-eec246d1",
+  "assessment_type": "static-design-only",
+  "grader_id": "independent-agent-review-01",
+  "audited_at": "2026-07-28",
+  "rubric_id": "skill-static-design-v1",
+  "design_quality_subtotal": {
+    "earned": 60.5,
+    "available": 76,
+    "normalized_score": 79.6
+  },
+  "evidence_readiness_score": 63.5,
+  "classification": "Experimental - well-specified frozen design; efficacy unproven",
+  "behavioral_efficacy": "Unknown / not run",
+  "original_hard_gate_findings": {
+    "immutable_snapshot": "fail at audit time; remediated by snapshot professionalize-prompt@2026-07-28-eec246d1",
+    "representative_holdout": "fail at audit time; fixture bank added but no run performed",
+    "runnable_harness": "fail at audit time; local harness added after audit",
+    "runtime_config_and_trace": "fail; target runtime still unresolved",
+    "adversarial_regression_run": "fail; cases designed but not executed",
+    "source_currency": "conditional",
+    "claims_discipline": "pass only while labeled design-only"
+  },
+  "notes": "Scores describe the frozen instruction design. They must not be compared with behavioral S scores or used to call the skill effective."
+}

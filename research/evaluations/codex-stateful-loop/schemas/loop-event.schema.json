@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "loop-event.schema.json",
+  "title": "Append-only loop event export",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "stream_id", "stream_version", "event_type", "occurred_at", "recorded_at", "actor_type", "actor_id", "correlation_id", "causation_id", "payload", "input_refs", "output_refs", "previous_event_hash", "event_hash", "idempotency_key"],
+  "properties": {
+    "event_id": {"type": "string"},
+    "stream_id": {"type": "string"},
+    "stream_version": {"type": "integer", "minimum": 1},
+    "event_type": {"type": "string"},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "actor_type": {"enum": ["human", "subject", "optimizer", "grader", "adjudicator", "harness"]},
+    "actor_id": {"type": "string"},
+    "session_id": {"type": ["string", "null"]},
+    "correlation_id": {"type": "string"},
+    "causation_id": {"type": ["string", "null"]},
+    "iteration_id": {"type": ["string", "null"]},
+    "run_id": {"type": ["string", "null"]},
+    "candidate_id": {"type": ["string", "null"]},
+    "base_snapshot_id": {"type": ["string", "null"]},
+    "surface_snapshot_id": {"type": ["string", "null"]},
+    "policy_snapshot_sha256": {"type": ["string", "null"]},
+    "payload": {"type": "object"},
+    "input_refs": {"type": "array", "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+    "output_refs": {"type": "array", "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+    "previous_event_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "event_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "idempotency_key": {"type": "string", "minLength": 1}
+  }
+}

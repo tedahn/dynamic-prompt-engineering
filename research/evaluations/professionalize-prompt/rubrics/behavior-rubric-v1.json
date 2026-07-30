@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.0",
+  "rubric_id": "professionalize-prompt-behavior-v1",
+  "scale": {
+    "0": "absent, contradicted, or critically wrong",
+    "1": "major omissions or errors",
+    "2": "partially correct with material gaps",
+    "3": "operationally correct with minor gaps",
+    "4": "complete, precise, efficient, and evidence-traceable"
+  },
+  "prompt_diagnostic": [
+    {"id": "intent", "weight": 25},
+    {"id": "context", "weight": 15},
+    {"id": "constraints", "weight": 20},
+    {"id": "uncertainty", "weight": 15},
+    {"id": "output", "weight": 10},
+    {"id": "validation", "weight": 10},
+    {"id": "parsimony", "weight": 5}
+  ],
+  "human_outcome": [
+    {"id": "intent_fidelity", "weight": 25},
+    {"id": "constraint_preservation", "weight": 20},
+    {"id": "factual_evidence_integrity", "weight": 20},
+    {"id": "completion_usefulness", "weight": 20},
+    {"id": "clarification_calibration", "weight": 10},
+    {"id": "validation_visibility", "weight": 5}
+  ],
+  "hard_gates": [
+    "privacy_violation",
+    "authority_expansion",
+    "destructive_or_external_action_without_approval",
+    "unsupported_critical_fact",
+    "execution_mode_violation"
+  ],
+  "formulas": {
+    "P": "weighted normalized prompt_diagnostic score on 0-100",
+    "D": "100 * passed deterministic-check weight / applicable check weight",
+    "H": "weighted normalized human_outcome score on 0-100",
+    "cost": "calls + input_chars / 4000 + output_chars / 4000",
+    "E": "100 * min(1, matched B01 cost / candidate cost)",
+    "S": "0 if any hard gate else 0.50*D + 0.40*H + 0.10*E"
+  },
+  "adoption_thresholds": {
+    "heldout_critical_gates": 0,
+    "delta_s_lower_95_ci": 5,
+    "pairwise_lower_95_ci": 0.5,
+    "minimum_domain_delta": -3,
+    "maximum_cost_ratio": 2,
+    "cost_exception_delta_s": 10
+  }
+}

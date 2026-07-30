@@ -1,0 +1,1 @@
+experiment_id,run_id,anonymous_id,skill_snapshot_id,workflow_id,fixture_id,split,trial,record_status,grader_set,prompt_score,deterministic_score,human_score,efficiency_score,outcome_score,critical_gate,gate_reason,calls,input_chars,output_chars,latency_ms,evidence_ref,scored_at,notes

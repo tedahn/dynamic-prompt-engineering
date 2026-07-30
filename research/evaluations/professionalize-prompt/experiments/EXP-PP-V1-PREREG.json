@@ -1,0 +1,87 @@
+{
+  "schema_version": "1.0",
+  "experiment_id": "EXP-PP-V1",
+  "status": "blocked-before-run",
+  "preregistered_at": "2026-07-28T20:20:34.487Z",
+  "owner": "Project owner (identity unresolved)",
+  "adoption_approver": "Unknown",
+  "target_surface_id": "Unknown",
+  "target_model": "Unknown",
+  "runtime_settings": "Unknown",
+  "enabled_tools": "Unknown",
+  "data_boundary_approved": false,
+  "budget_approved": false,
+  "skill_snapshot_id": "professionalize-prompt@2026-07-28-eec246d1",
+  "fixture_registry": "fixtures/fixtures-v1.jsonl",
+  "check_registry": "fixtures/check-registry-v1.json",
+  "workflow_registry": "workflows/workflows-v1.json",
+  "rubric": "rubrics/behavior-rubric-v1.json",
+  "frozen_artifacts": {
+    "fixtures": {
+      "path": "fixtures/fixtures-v1.jsonl",
+      "sha256": "03f72f8976de9ab1bfa0dd7a847895cd3245fc4f838fc51a1c518c47556760e1",
+      "bytes": 27376
+    },
+    "check_registry": {
+      "path": "fixtures/check-registry-v1.json",
+      "sha256": "7b085f1e49723fff533783e94f70ef1e5f349da5fcb72471245011e964d5b56c",
+      "bytes": 3645
+    },
+    "workflows": {
+      "path": "workflows/workflows-v1.json",
+      "sha256": "3a1e2e1df4880c574687335ea36f475b3671a617cd75a530df4ae0a5e8cb0bf9",
+      "bytes": 3560
+    },
+    "rubric": {
+      "path": "rubrics/behavior-rubric-v1.json",
+      "sha256": "2a82a6a2b38c9d59d5fab5337d5a12d8aa441c76ae78684cfd3bd27271735a45",
+      "bytes": 1814
+    },
+    "harness": {
+      "path": "scripts/eval_harness.py",
+      "sha256": "9764d3793e28b9dd6c574cca778afef94ff711e8d0034ffa6e0a3a59613e8d99",
+      "bytes": 31872
+    }
+  },
+  "seed": 20260728,
+  "trials": 3,
+  "adoption_baseline": "B01_STATIC_MIN_1CALL",
+  "full_workflows": [
+    "B00_RAW_1CALL",
+    "B01_STATIC_MIN_1CALL",
+    "B02_SHAM_2CALL",
+    "B03_PRO_PROMPT_2CALL",
+    "B04_PRO_INLINE_1CALL"
+  ],
+  "pilot": {
+    "purpose": "non-adoptive safety and variance check",
+    "fixture_ids": ["FX-ED-02", "FX-CD-02", "FX-RS-02", "FX-DA-02", "FX-CR-02"],
+    "workflow_ids": ["B00_RAW_1CALL", "B01_STATIC_MIN_1CALL", "B04_PRO_INLINE_1CALL"],
+    "trials": 3,
+    "execution_cells": 45,
+    "expected_plan_sha256": "95bbc3f55faa0017e25cf1e8a30478d55ed7140fb60f08c98d3bac4b427726e2"
+  },
+  "full_study": {
+    "fixture_count": 45,
+    "workflow_count": 5,
+    "trials": 3,
+    "execution_cells": 675
+  },
+  "stop_rules": [
+    "confirmed critical safety or authority regression",
+    "surface or model changes after preregistration",
+    "fixture or grader leakage",
+    "unapproved data or tool boundary",
+    "budget exhausted",
+    "remaining runs cannot change the decision"
+  ],
+  "unblock_requires": [
+    "named owner",
+    "target surface and model",
+    "runtime and tool configuration",
+    "approved synthetic fixture artifacts",
+    "human grader calibration",
+    "run budget",
+    "adoption approver"
+  ]
+}

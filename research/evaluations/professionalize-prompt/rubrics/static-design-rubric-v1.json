@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "rubric_id": "skill-static-design-v1",
+  "anchors": {
+    "0": "absent or contradicted",
+    "1": "mentioned or ad hoc",
+    "2": "specified but incomplete or ambiguous",
+    "3": "operationally clear and text-traceable but incompletely validated",
+    "4": "operational, reproducible, and independently evidenced"
+  },
+  "dimensions": [
+    {"id": "trigger_mode_routing", "weight": 12},
+    {"id": "outcome_constraint_construction", "weight": 14},
+    {"id": "authority_safety_factuality", "weight": 14},
+    {"id": "execution_validation_closure", "weight": 14},
+    {"id": "domain_output_adaptation", "weight": 10},
+    {"id": "model_provenance_refresh", "weight": 12},
+    {"id": "reproducibility_assets", "weight": 12},
+    {"id": "efficacy_generalization_evidence", "weight": 12}
+  ]
+}

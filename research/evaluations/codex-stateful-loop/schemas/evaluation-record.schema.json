@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evaluation-record.schema.json",
+  "title": "Blinded stateful episode evaluation record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "record_id", "cell_id", "anonymous_id", "episode_id", "family", "trial", "grader_id", "record_status", "scores", "critical_gate", "gate_reasons", "pairwise", "evidence_refs", "graded_at"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "record_id": {"type": "string"},
+    "cell_id": {"type": "string"},
+    "anonymous_id": {"type": "string"},
+    "episode_id": {"type": "string"},
+    "family": {"type": "string"},
+    "trial": {"type": "integer", "minimum": 1},
+    "grader_id": {"type": "string"},
+    "record_status": {"enum": ["provisional-model-graded", "human-final", "adjudication-required", "invalid"]},
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_score", "requirement_preservation", "context_precision", "stale_or_irrelevant_rate", "mutation_precision", "mutation_recall", "cost_units", "latency_ms"],
+      "properties": {
+        "task_score": {"type": "number", "minimum": 0, "maximum": 100},
+        "requirement_preservation": {"type": "number", "minimum": 0, "maximum": 100},
+        "context_precision": {"type": "number", "minimum": 0, "maximum": 1},
+        "stale_or_irrelevant_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "mutation_precision": {"type": "number", "minimum": 0, "maximum": 1},
+        "mutation_recall": {"type": "number", "minimum": 0, "maximum": 1},
+        "cost_units": {"type": "number", "minimum": 0},
+        "latency_ms": {"type": "number", "minimum": 0}
+      }
+    },
+    "critical_gate": {"type": "boolean"},
+    "gate_reasons": {"type": "array", "items": {"type": "string"}},
+    "pairwise": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["left_anonymous_id", "right_anonymous_id", "winner"],
+      "properties": {
+        "left_anonymous_id": {"type": "string"},
+        "right_anonymous_id": {"type": "string"},
+        "winner": {"enum": ["left", "right", "tie"]}
+      }
+    },
+    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+    "graded_at": {"type": "string", "format": "date-time"}
+  }
+}

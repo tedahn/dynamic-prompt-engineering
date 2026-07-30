@@ -1,0 +1,142 @@
+{
+  "schema_version": "2.0",
+  "experiment_id": "EXP-PP-V2-PILOT",
+  "status": "pilot-authorized-pending-preflight",
+  "authorized_at": "2026-07-28T21:49:00Z",
+  "authorization_evidence": "Current Codex task user message: yes go ahead and do that",
+  "owner": "Ted Ahn (current workspace owner)",
+  "pilot_approver": "Ted Ahn (current workspace owner)",
+  "adoption_approver": "Not applicable; this pilot cannot authorize adoption",
+  "purpose": "Non-adoptive instrumentation and directional behavior diagnostic",
+  "supersedes_pilot_only": "EXP-PP-V1 pilot definition; no V1 model cells were executed",
+  "skill_snapshot_id": "professionalize-prompt@2026-07-28-eec246d1",
+  "skill_bundle_sha256": "eec246d1ed31cee3be7965516c31bf3225246ff462a1be6b0526f6f582dd841c",
+  "target_surface": {
+    "id": "chatgpt-desktop-bundled-codex-cli",
+    "cli_path": "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "cli_version": "codex-cli 0.146.0-alpha.3.1",
+    "cli_sha256": "6d8be49e49751554df16572369e636cbe02c84b208cad3dc35528c846eeca223",
+    "cli_bytes": 267702000,
+    "host_runtime": "macOS 26.5.2 / Darwin 25.5.0 / arm64 / Python 3.14.6",
+    "model_alias": "gpt-5.6-sol",
+    "model_resolution": "Provider-resolved model snapshot is not exposed by the CLI",
+    "reasoning_effort": "high",
+    "verbosity": "CLI default; not exposed as a fixed execution control",
+    "sampling_seed": "Unavailable",
+    "conversation_isolation": "Fresh --ephemeral process for every cell; resume is forbidden",
+    "authentication": "Authenticated ChatGPT session via isolated CODEX_HOME symlink; credential contents are excluded from artifacts",
+    "fixed_cli_flags": ["--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--json", "--ask-for-approval=never"],
+    "common_disabled_features": [
+      "apps",
+      "auth_elicitation",
+      "browser_use",
+      "browser_use_external",
+      "browser_use_full_cdp_access",
+      "code_mode_host",
+      "computer_use",
+      "goals",
+      "guardian_approval",
+      "hooks",
+      "image_generation",
+      "in_app_browser",
+      "memories",
+      "multi_agent",
+      "plugin_sharing",
+      "plugins",
+      "remote_plugin",
+      "skill_mcp_dependency_install",
+      "skill_search",
+      "tool_call_mcp_elicitation",
+      "tool_search_always_defer_mcp_tools",
+      "tool_suggest",
+      "workspace_dependencies"
+    ],
+    "additional_no_tool_disabled_features": ["shell_snapshot", "shell_tool", "unified_exec"]
+  },
+  "execution_boundary": {
+    "data": "Synthetic fixture data only",
+    "data_boundary_approved": true,
+    "network": "Forbidden",
+    "external_side_effects": "Forbidden",
+    "no_tool_fixture_policy": "shell disabled; read-only empty working directory",
+    "workspace_fixture_policy": "shell available only inside a unique synthetic per-cell workspace; workspace-write sandbox; mutations are captured and never propagated",
+    "budget_approved": true,
+    "budget_scope": "Three discarded execution preflight cells, 45 scored execution cells, two provisional model graders per 15 blind groups, and disagreement-only adjudication",
+    "provider_logging": "May occur under the authenticated ChatGPT service and cannot be disabled by this harness"
+  },
+  "registries": {
+    "fixtures": "fixtures/pilot-fixtures-v2.jsonl",
+    "artifacts": "fixtures/pilot-artifacts-v2.json",
+    "workflows": "workflows/workflows-pilot-v2.json",
+    "rubric": "rubrics/pilot-rubric-v2.json",
+    "grader_schema": "rubrics/model-grader-output-schema-v2.json"
+  },
+  "pilot": {
+    "fixture_ids": ["FX-ED-01", "FX-CD-02", "FX-RS-03", "FX-DA-03", "FX-CR-04"],
+    "workflow_ids": ["B00_RAW_1CALL", "B01_STATIC_MIN_1CALL", "B04_PRO_INLINE_1CALL"],
+    "trials": 3,
+    "execution_cells": 45,
+    "execution_seed": 20260728,
+    "grade_seed": 7282026,
+    "concurrency": 1,
+    "expected_plan_sha256": "TO_BE_FROZEN_BEFORE_PREFLIGHT",
+    "coverage": {
+      "domains": 5,
+      "modes": ["prompt-only", "default", "execute-only"],
+      "ambiguity": ["clear", "vague", "consequentially-incomplete"],
+      "authority_risk": ["low", "high"],
+      "tool_policy": ["none", "workspace"]
+    }
+  },
+  "preflight": {
+    "fixture_ids": ["FX-ED-01", "FX-RS-03", "FX-CR-04"],
+    "workflow_ids": ["B00_RAW_1CALL", "B01_STATIC_MIN_1CALL", "B04_PRO_INLINE_1CALL"],
+    "workflow_fixture_pairs": [
+      {"workflow_id": "B00_RAW_1CALL", "fixture_id": "FX-ED-01"},
+      {"workflow_id": "B01_STATIC_MIN_1CALL", "fixture_id": "FX-RS-03"},
+      {"workflow_id": "B04_PRO_INLINE_1CALL", "fixture_id": "FX-CR-04"}
+    ],
+    "tool_policies": ["none", "workspace", "workspace"],
+    "cells": 3,
+    "excluded_from_scores": true,
+    "validation_only": ["CLI exit", "event schema", "nonempty final response", "usage capture", "trace hashing"]
+  },
+  "retry_policy": {
+    "maximum_retries": 2,
+    "maximum_attempts": 3,
+    "per_attempt_timeout_seconds": 600,
+    "eligible": ["rate limit", "transport failure", "server error", "process timeout", "missing final response"],
+    "ineligible": ["completed low-quality response", "task-check failure", "hard-gate content"],
+    "backoff_seconds": [5, 15]
+  },
+  "grading": {
+    "evidence_state": "provisional-model-graded",
+    "grader_a": {"model_alias": "gpt-5.6-sol", "reasoning_effort": "high"},
+    "grader_b": {"model_alias": "gpt-5.6-terra", "reasoning_effort": "high"},
+    "adjudication": "Only disagreements in semantic checks, hard gates, or dimension scores differing by more than one point enter the queue",
+    "human_review": "Required before any behavioral score is final",
+    "pairwise": "Explicit blinded A/B/C ranking; never inferred from scalar score"
+  },
+  "frozen_artifacts": {
+    "status": "TO_BE_FROZEN_BEFORE_PREFLIGHT"
+  },
+  "stop_rules": [
+    "artifact or expected-plan hash mismatch",
+    "CLI version or requested model alias changes",
+    "unauthorized network or external access",
+    "fixture data escapes its isolated workspace",
+    "a process resumes prior conversation state",
+    "completed outputs are inspected before freeze or used to alter a workflow",
+    "confirmed privacy, authority, destructive-action, unsupported-critical-fact, or execution-mode gate",
+    "approved execution or grading budget is exhausted"
+  ],
+  "claims_not_supported": [
+    "safety clearance",
+    "behavioral efficacy",
+    "generalization",
+    "valid confidence interval",
+    "production adoption",
+    "human preference"
+  ],
+  "full_study_authorized": false
+}

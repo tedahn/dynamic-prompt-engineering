@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#f2efe7">
+    <title>Prompt Research Observatory</title>
+    <meta
+      name="description"
+      content="A data-backed view of prompt-engineering workflows, evaluations, evidence, and results."
+    >
+    <link rel="stylesheet" href="styles.css">
+    <script src="data.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to research view</a>
+
+    <header class="masthead">
+      <a class="brand" href="#overview" aria-label="Prompt Research Observatory, overview">
+        <span class="brand-mark" aria-hidden="true">P/</span>
+        <span>
+          <strong>Prompt Research</strong>
+          <small>Observatory</small>
+        </span>
+      </a>
+
+      <div class="snapshot-strip" aria-label="Current research snapshot">
+        <span class="status-dot status-dot--experimental" aria-hidden="true"></span>
+        <span>Experimental</span>
+        <span class="snapshot-id" data-bind="snapshot-short">snapshot loading</span>
+      </div>
+
+      <nav class="view-nav" aria-label="Research views">
+        <a href="#overview" data-view-link="overview" aria-current="page">Overview</a>
+        <a href="#workflows" data-view-link="workflows">Workflows</a>
+        <a href="#evaluations" data-view-link="evaluations">Evaluations</a>
+        <a href="#techniques" data-view-link="techniques">Techniques</a>
+      </nav>
+    </header>
+
+    <main id="main-content">
+      <section class="view view--active" id="overview" data-view="overview" aria-labelledby="overview-title">
+        <div class="hero">
+          <div class="hero-copy">
+            <p class="eyebrow">Decision instrument · as of <span data-bind="as-of">—</span></p>
+            <h1 id="overview-title">See the evidence boundary,<br>not just the score.</h1>
+            <p class="hero-lede">
+              A live map from prompt technique to reproducible workflow, evaluation record, and promotion decision.
+              Missing behavioral evidence stays visibly unknown.
+            </p>
+            <div class="hero-actions">
+              <a class="button button--ink" href="#evaluations">Inspect evaluation state</a>
+              <a class="text-link" href="../research/evaluations/professionalize-prompt/README.md">Open evaluation lab <span aria-hidden="true">↗</span></a>
+            </div>
+          </div>
+
+          <aside class="decision-stamp" aria-labelledby="decision-stamp-title">
+            <p class="eyebrow" id="decision-stamp-title">Current decision</p>
+            <strong>Do not promote</strong>
+            <p>Frozen design is reviewable. Behavioral efficacy has not been measured.</p>
+            <dl>
+              <div>
+                <dt>Behavioral rows</dt>
+                <dd data-bind="score-rows">—</dd>
+              </div>
+              <div>
+                <dt>Pilot</dt>
+                <dd data-bind="pilot-status-short">—</dd>
+              </div>
+            </dl>
+          </aside>
+        </div>
+
+        <div class="metric-ribbon" aria-label="Workspace summary">
+          <article>
+            <span class="metric-value" data-bind="dynamic-techniques">—</span>
+            <span class="metric-label">dynamic techniques</span>
+          </article>
+          <article>
+            <span class="metric-value" data-bind="skill-candidates">—</span>
+            <span class="metric-label">skill candidates</span>
+          </article>
+          <article>
+            <span class="metric-value" data-bind="workflows">—</span>
+            <span class="metric-label">core workflows</span>
+          </article>
+          <article>
+            <span class="metric-value" data-bind="fixtures">—</span>
+            <span class="metric-label">evaluation fixtures</span>
+          </article>
+          <article>
+            <span class="metric-value" data-bind="sources">—</span>
+            <span class="metric-label">registered sources</span>
+          </article>
+        </div>
+
+        <section class="runway-panel" aria-labelledby="runway-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Promotion runway</p>
+              <h2 id="runway-title">Where the evidence stops</h2>
+            </div>
+            <div class="evidence-legend" aria-label="Evidence state legend">
+              <span><i class="legend-mark legend-mark--done"></i>Recorded</span>
+              <span><i class="legend-mark legend-mark--current"></i>Current gate</span>
+              <span><i class="legend-mark legend-mark--pending"></i>Pending</span>
+            </div>
+          </div>
+          <ol class="runway" id="promotion-runway"></ol>
+        </section>
+
+        <div class="overview-grid">
+          <section class="score-register" aria-labelledby="score-register-title">
+            <div class="section-heading section-heading--compact">
+              <div>
+                <p class="eyebrow">Three different questions</p>
+                <h2 id="score-register-title">Score register</h2>
+              </div>
+              <span class="evidence-chip evidence-chip--design">Static review</span>
+            </div>
+            <div id="score-bars" class="score-bars"></div>
+            <p class="fine-print">Static scores describe design quality and evidence readiness. They are not efficacy scores and should not be compared to future outcome scores as a shared scale.</p>
+          </section>
+
+          <section class="claim-boundary" aria-labelledby="claim-boundary-title">
+            <p class="eyebrow">Claim boundary</p>
+            <h2 id="claim-boundary-title">What the workspace can say</h2>
+            <div class="claim-list">
+              <article>
+                <span class="claim-index">01</span>
+                <div><strong>Observed</strong><p>The skill bundle is frozen and its design was audited.</p></div>
+              </article>
+              <article>
+                <span class="claim-index">02</span>
+                <div><strong>Designed</strong><p>Comparators, fixtures, rubrics, ablations, and a pilot protocol exist.</p></div>
+              </article>
+              <article class="claim-list__unknown">
+                <span class="claim-index">03</span>
+                <div><strong>Unknown</strong><p>Whether professionalization improves held-out task outcomes.</p></div>
+              </article>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="workflows" data-view="workflows" aria-labelledby="workflows-title" hidden>
+        <div class="view-intro">
+          <p class="eyebrow">Controlled comparisons</p>
+          <h1 id="workflows-title">Six ways through the same request.</h1>
+          <p>Select a workflow to inspect what it isolates. The concise static wrapper is the adoption baseline; the human-authored specification is a diagnostic ceiling only.</p>
+        </div>
+
+        <div class="workflow-layout">
+          <div>
+            <div class="workflow-toolbar" role="group" aria-label="Filter workflows">
+              <button class="filter-button is-active" type="button" data-workflow-filter="all" aria-pressed="true">All</button>
+              <button class="filter-button" type="button" data-workflow-filter="baseline" aria-pressed="false">Baselines</button>
+              <button class="filter-button" type="button" data-workflow-filter="candidate" aria-pressed="false">Candidates</button>
+              <button class="filter-button" type="button" data-workflow-filter="diagnostic-ceiling" aria-pressed="false">Ceiling</button>
+            </div>
+            <div class="workflow-rail" id="workflow-rail" aria-label="Evaluation workflows"></div>
+          </div>
+
+          <aside class="workflow-inspector" id="workflow-inspector" aria-live="polite">
+            <p class="eyebrow">Selected workflow</p>
+            <h2>Choose a workflow</h2>
+            <p>Its control purpose and current result state will appear here.</p>
+          </aside>
+        </div>
+
+        <section class="ablation-panel" aria-labelledby="ablation-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Mechanism tests</p>
+              <h2 id="ablation-title">What happens when one guardrail disappears?</h2>
+            </div>
+            <span class="evidence-chip evidence-chip--planned">Designed · not run</span>
+          </div>
+          <div class="ablation-tree" id="ablation-tree"></div>
+        </section>
+      </section>
+
+      <section class="view" id="evaluations" data-view="evaluations" aria-labelledby="evaluations-title" hidden>
+        <div class="view-intro view-intro--split">
+          <div>
+            <p class="eyebrow">Evaluation ledger</p>
+            <h1 id="evaluations-title">A blank result is a result state.</h1>
+          </div>
+          <p>The official behavioral ledger remains empty. This view shows the frozen design audit and exactly what the planned pilot would measure—without fabricating a performance chart.</p>
+        </div>
+
+        <div class="evaluation-status" role="status">
+          <div class="empty-orbit" aria-hidden="true"><span></span></div>
+          <div>
+            <p class="eyebrow">Behavioral efficacy</p>
+            <strong data-bind="behavioral-efficacy">Unknown</strong>
+            <p><span data-bind="score-rows">0</span> official score rows · human review required before any behavioral score is final.</p>
+          </div>
+          <a class="text-link" href="../research/evaluations/professionalize-prompt/scores/score-ledger.csv">Inspect score ledger <span aria-hidden="true">↗</span></a>
+        </div>
+
+        <div class="evaluation-grid">
+          <section class="matrix-panel" aria-labelledby="matrix-title">
+            <div class="section-heading section-heading--compact">
+              <div>
+                <p class="eyebrow">Workflow × domain</p>
+                <h2 id="matrix-title">Outcome matrix</h2>
+              </div>
+              <span class="matrix-state" id="matrix-state">Awaiting runs</span>
+            </div>
+            <div class="table-wrap" id="outcome-matrix"></div>
+          </section>
+
+          <section class="fixture-panel" aria-labelledby="fixture-title">
+            <p class="eyebrow">Fixture bank</p>
+            <h2 id="fixture-title"><span data-bind="fixtures">—</span> cases, frozen by split</h2>
+            <div class="split-bar" aria-label="Fixture split">
+              <span class="split-bar__dev" id="fixture-dev-bar"></span>
+              <span class="split-bar__holdout" id="fixture-holdout-bar"></span>
+            </div>
+            <div class="split-key">
+              <span><i class="legend-mark legend-mark--dev"></i><strong data-bind="fixture-dev">—</strong> development</span>
+              <span><i class="legend-mark legend-mark--holdout"></i><strong data-bind="fixture-holdout">—</strong> holdout</span>
+            </div>
+            <div class="domain-list" id="domain-list"></div>
+          </section>
+        </div>
+
+        <section class="pilot-panel" aria-labelledby="pilot-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Next controlled run</p>
+              <h2 id="pilot-title">Pilot V2 execution plan</h2>
+            </div>
+            <span class="evidence-chip evidence-chip--current" data-bind="pilot-status">—</span>
+          </div>
+          <div class="pilot-grid">
+            <dl class="pilot-facts" id="pilot-facts"></dl>
+            <ol class="pilot-sequence" id="pilot-sequence"></ol>
+          </div>
+        </section>
+
+        <section class="state-loop-panel" aria-labelledby="state-loop-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Codex in the loop</p>
+              <h2 id="state-loop-title">State evolves. Authority does not.</h2>
+            </div>
+            <span class="evidence-chip evidence-chip--planned" id="state-loop-status">Design only</span>
+          </div>
+
+          <div class="state-loop-hero">
+            <div class="state-loop-cycle" id="state-loop-cycle" aria-label="Governed state evolution cycle"></div>
+            <aside class="state-boundary" aria-labelledby="state-boundary-title">
+              <p class="eyebrow" id="state-boundary-title">Mutable boundary</p>
+              <strong>Durable context entries only</strong>
+              <p id="state-loop-boundary"></p>
+              <div class="state-snapshot" id="state-loop-snapshot"></div>
+            </aside>
+          </div>
+
+          <div class="state-loop-grid">
+            <section aria-labelledby="loop-stages-title">
+              <div class="subsection-heading">
+                <div>
+                  <p class="eyebrow">Run budget</p>
+                  <h3 id="loop-stages-title">Three gates, no skipped rung</h3>
+                </div>
+                <span class="unknown-mark">0 provider runs</span>
+              </div>
+              <div class="loop-stages" id="state-loop-stages"></div>
+            </section>
+
+            <section aria-labelledby="loop-conditions-title">
+              <div class="subsection-heading">
+                <div>
+                  <p class="eyebrow">Controlled comparison</p>
+                  <h3 id="loop-conditions-title">Six context policies</h3>
+                </div>
+                <span class="unknown-mark">Results unknown</span>
+              </div>
+              <div class="loop-conditions" id="state-loop-conditions"></div>
+            </section>
+          </div>
+
+          <details class="state-layers">
+            <summary><span>Inspect the eight state layers</span><small>Writers and visibility stay explicit</small></summary>
+            <div class="state-layer-list" id="state-loop-layers"></div>
+          </details>
+
+          <footer class="state-loop-footer">
+            <p><strong>Promotion gate:</strong> fresh escrowed holdout, preregistered thresholds, named-human approval, canary, and tested rollback.</p>
+            <div>
+              <a class="text-link" href="../research/evaluations/codex-stateful-loop/ARCHITECTURE.md">Architecture <span aria-hidden="true">↗</span></a>
+              <a class="text-link" href="../research/evaluations/codex-stateful-loop/PROTOCOL.md">Protocol <span aria-hidden="true">↗</span></a>
+            </div>
+          </footer>
+        </section>
+      </section>
+
+      <section class="view" id="techniques" data-view="techniques" aria-labelledby="techniques-title" hidden>
+        <div class="view-intro view-intro--split">
+          <div>
+            <p class="eyebrow">Research field</p>
+            <h1 id="techniques-title">Nineteen techniques. Three operating modes.</h1>
+          </div>
+          <p>This is a planning map, not a leaderboard. Evaluation burden is a qualitative workflow estimate; paper-scoped gains do not establish local effectiveness.</p>
+        </div>
+
+        <div class="technique-controls">
+          <div class="filter-row" role="group" aria-label="Filter technique family">
+            <button class="filter-button is-active" type="button" data-technique-filter="all" aria-pressed="true">All techniques</button>
+            <button class="filter-button" type="button" data-technique-filter="request-transformer" aria-pressed="false">Request transformers</button>
+            <button class="filter-button" type="button" data-technique-filter="retrieval-routing" aria-pressed="false">Retrieval & routing</button>
+            <button class="filter-button" type="button" data-technique-filter="offline-optimizer" aria-pressed="false">Scored optimizers</button>
+          </div>
+          <label class="search-control">
+            <span>Find a technique</span>
+            <input id="technique-search" type="search" placeholder="Search names or workflows" autocomplete="off">
+          </label>
+        </div>
+
+        <section class="technique-field" aria-labelledby="technique-field-title">
+          <div class="section-heading section-heading--compact">
+            <div>
+              <p class="eyebrow">Workflow position × evaluation burden</p>
+              <h2 id="technique-field-title">Technique field</h2>
+            </div>
+            <span class="evidence-chip evidence-chip--inference">Planning inference</span>
+          </div>
+          <div class="field-axis field-axis--y" aria-hidden="true"><span>Lower</span><span>Higher evaluation burden</span></div>
+          <div class="technique-columns" id="technique-columns"></div>
+        </section>
+
+        <section class="candidate-register" aria-labelledby="candidate-register-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Skill-form candidates</p>
+              <h2 id="candidate-register-title"><span data-bind="skill-candidates">—</span> falsifiable promotion paths</h2>
+            </div>
+            <a class="text-link" href="../research/TECHNIQUE_TAXONOMY.md">Open taxonomy <span aria-hidden="true">↗</span></a>
+          </div>
+          <div class="candidate-list" id="candidate-list"></div>
+        </section>
+
+        <section class="ledger-panel" aria-labelledby="ledger-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Evidence governance</p>
+              <h2 id="ledger-title">The research behind the map</h2>
+            </div>
+          </div>
+          <div class="ledger-grid" id="ledger-grid"></div>
+        </section>
+      </section>
+    </main>
+
+    <footer>
+      <p>Prompt Research Observatory · generated view of repository evidence</p>
+      <p>Canonical records remain in <a href="../research/">research/</a> and <a href="../research/ledgers/">research/ledgers/</a>.</p>
+    </footer>
+  </body>
+</html>

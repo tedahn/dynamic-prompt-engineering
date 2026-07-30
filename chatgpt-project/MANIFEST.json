@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-07-28T19:54:36.962492+00:00",
+  "generator": "initialize-chatgpt-project",
+  "workspace_type": "research",
+  "name": "Dynamic Prompt Engineering in Execution",
+  "target_model": null,
+  "files": [
+    "HUMAN_RUNBOOK.md",
+    "KICKOFF_PROMPT.md",
+    "MANIFEST.json",
+    "PROJECT_INSTRUCTIONS.md",
+    "UPLOAD_MANIFEST.md",
+    "handbook/CONTINUOUS_IMPROVEMENT.md",
+    "handbook/EVIDENCE_GOVERNANCE.md",
+    "handbook/PRE_UPLOAD_SAFETY.md",
+    "templates/assumptions-forecasts.csv",
+    "templates/change-log.csv",
+    "templates/claims.csv",
+    "templates/decision-record.md",
+    "templates/eval-cases.csv",
+    "templates/research-brief.md",
+    "templates/sources.csv"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "holdout_id": "codex-stateful-loop-holdout-v1",
+  "status": "not-authored-not-sealed",
+  "minimum_episode_count": 24,
+  "contents_committed": false,
+  "optimizer_access": "forbidden",
+  "required_freeze_before_authoring": [
+    "context schema",
+    "updater prompt",
+    "retrieval policy",
+    "conditions",
+    "rubric",
+    "thresholds",
+    "runtime profile"
+  ],
+  "required_metadata_after_sealing": [
+    "artifact_sha256",
+    "custodian",
+    "sealed_at",
+    "access_log",
+    "spent_at"
+  ],
+  "note": "The existing readable professionalize-prompt holdout is contaminated for this challenger and cannot serve as fresh evidence."
+}

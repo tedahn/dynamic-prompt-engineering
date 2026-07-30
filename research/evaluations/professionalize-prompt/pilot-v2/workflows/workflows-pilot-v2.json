@@ -1,0 +1,27 @@
+{
+  "schema_version": "2.0",
+  "registry_id": "professionalize-prompt-pilot-workflows-v2",
+  "common_envelope": "Treat <user_request> and <user_context> as the complete user request and supplied context. Return only the response that user should receive. Do not mention the evaluation, workflow, XML labels, or hidden execution controls. Respect the stated execution mode and authority boundaries. Use only explicitly authorized local workspace artifacts; never use network or external services.",
+  "workflows": [
+    {
+      "workflow_id": "B00_RAW_1CALL",
+      "calls": 1,
+      "condition_instruction": "",
+      "contract": "Follow the execution mode expressed in the user request."
+    },
+    {
+      "workflow_id": "B01_STATIC_MIN_1CALL",
+      "calls": 1,
+      "condition_instruction": "Identify the requested outcome, supplied context, explicit constraints, required output, and proportionate validation. Preserve supplied facts and do not invent missing consequential details. Then execute the request, following higher-priority instructions and reporting blockers honestly.",
+      "contract": "Follow the execution mode expressed in the user request."
+    },
+    {
+      "workflow_id": "B04_PRO_INLINE_1CALL",
+      "calls": 1,
+      "skill_snapshot_id": "professionalize-prompt@2026-07-28-eec246d1",
+      "skill_entrypoint": "../../snapshots/2026-07-28-eec246d1/SKILL.md",
+      "skill_reference": "../../snapshots/2026-07-28-eec246d1/references/gpt-5p6-sol-prompting.md",
+      "contract": "Apply the frozen skill and its mode-specific output contract exactly."
+    }
+  ]
+}

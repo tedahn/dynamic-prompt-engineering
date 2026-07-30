@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "snapshot_id": "professionalize-prompt@2026-07-28-eec246d1",
+  "captured_at": "2026-07-28T20:20:34.487Z",
+  "source_root": "$HOME/.codex/skills/professionalize-prompt",
+  "source_vcs": {
+    "repository": null,
+    "commit": null,
+    "status": "source root is not in a Git worktree"
+  },
+  "bundle_sha256": "eec246d1ed31cee3be7965516c31bf3225246ff462a1be6b0526f6f582dd841c",
+  "bundle_hash_algorithm": "SHA-256 over lines relative_posix_path:file_sha256 in lexical path order joined by LF with no terminal LF",
+  "canonicalization": "Exact source bytes; no newline or encoding transformation",
+  "dependency_closure_file_count": 3,
+  "immutable": true,
+  "files": [
+    {
+      "source_path": "$HOME/.codex/skills/professionalize-prompt/SKILL.md",
+      "snapshot_path": "SKILL.md",
+      "sha256": "ae54da4b0b54be956bf2a577dfcdf9b518f196f01582987e068170ecbd5516f5",
+      "bytes": 8046,
+      "lines": 120,
+      "source_modified_at": "2026-07-27T22:16:49.825Z"
+    },
+    {
+      "source_path": "$HOME/.codex/skills/professionalize-prompt/agents/openai.yaml",
+      "snapshot_path": "agents/openai.yaml",
+      "sha256": "a797391ac6b47267df18b7858cd7768d3090e1ac3758875b71a6d32d67cf64f7",
+      "bytes": 260,
+      "lines": 5,
+      "source_modified_at": "2026-07-27T21:55:52.941Z"
+    },
+    {
+      "source_path": "$HOME/.codex/skills/professionalize-prompt/references/gpt-5p6-sol-prompting.md",
+      "snapshot_path": "references/gpt-5p6-sol-prompting.md",
+      "sha256": "5e0db30623df7005da7a824e74f0f3c7a561d667f95637bb614e63a80d4532fa",
+      "bytes": 5441,
+      "lines": 71,
+      "source_modified_at": "2026-07-27T22:16:49.825Z"
+    }
+  ],
+  "target_surface_id": "Unknown",
+  "target_model": "Unknown",
+  "runtime_settings": "Unknown",
+  "enabled_tools": "Unknown",
+  "evaluation_state": "not-run",
+  "notes": "This is an immutable design snapshot. Its presence and hashes do not establish behavioral efficacy."
+}

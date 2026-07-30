@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "change-proposal.schema.json",
+  "title": "Gated context change proposal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "proposal_id", "base_snapshot_id", "created_by", "created_at", "source_event_ids", "hypothesis", "changed_mechanism", "predicted_benefit", "predicted_regressions", "counterexamples", "operations"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "proposal_id": {"type": "string", "pattern": "^PROP-[A-Z0-9-]+$"},
+    "base_snapshot_id": {"type": "string"},
+    "created_by": {"type": "string"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "source_event_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "hypothesis": {"type": "string", "minLength": 1},
+    "changed_mechanism": {"type": "string", "minLength": 1},
+    "predicted_benefit": {"type": "string", "minLength": 1},
+    "predicted_regressions": {"type": "array", "items": {"type": "string"}},
+    "counterexamples": {"type": "array", "items": {"type": "string"}},
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "entry"],
+            "properties": {"op": {"const": "add"}, "entry": {"$ref": "context-state.schema.json#/$defs/entry"}}
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "target_entry_id", "entry"],
+            "properties": {"op": {"const": "supersede"}, "target_entry_id": {"type": "string"}, "entry": {"$ref": "context-state.schema.json#/$defs/entry"}}
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "target_entry_id"],
+            "properties": {"op": {"const": "retire"}, "target_entry_id": {"type": "string"}}
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rollback-approval.schema.json",
+  "title": "Named-human context rollback approval",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "approval_id",
+    "decision",
+    "human_approved",
+    "approved_by",
+    "approved_at",
+    "expires_at",
+    "expected_active_snapshot_id",
+    "expected_active_version",
+    "rollback_snapshot_id",
+    "reason"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "approval_id": {"type": "string", "minLength": 1},
+    "decision": {"const": "rollback"},
+    "human_approved": {"const": true},
+    "approved_by": {"type": "string", "minLength": 1},
+    "approved_at": {"type": "string", "format": "date-time"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "expected_active_snapshot_id": {"type": "string", "minLength": 1},
+    "expected_active_version": {"type": "integer", "minimum": 1},
+    "rollback_snapshot_id": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1}
+  }
+}
