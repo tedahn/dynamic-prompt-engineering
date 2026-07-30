@@ -32,6 +32,17 @@ Volatile model and product facts belong here, not in stable workspace instructio
 - **State:** source pages retrieved for the initialization; individual claims remain scoped in the claim ledger
 - **Refresh trigger:** model release, model-picker change, reasoning-control change, API or Codex tool change, optimizer/eval feature change, or a failed local reproduction
 
+## SR-004 — model-aware professionalize-prompt challenger
+
+- **As of:** 2026-07-30
+- **Surface:** repository-local prototype targeting GPT models available through Codex, ChatGPT, Work, or API
+- **Candidate:** `professionalize-prompt-model-aware@2026-07-30`
+- **Current documented family:** GPT-5.6 Sol, Terra, and Luna; exact product and account availability must be verified at evaluation time
+- **Reasoning controls:** preserve exact surface labels; do not assume ChatGPT Extra High, Codex Ultra, API `xhigh` or `max`, and API Pro are interchangeable
+- **Sources:** `S-001`, `S-002`, and `S-060` through `S-062`
+- **Evidence state:** mechanically validated; behavioral efficacy and cross-surface transfer are `Unknown`
+- **Refresh trigger:** before a model-current claim or evaluation run; model, reasoning-control, pricing, limit, or availability change; or 2026-08-30
+
 ## Comparison rule
 
 Add a separate registry entry for every tested model, product surface, reasoning setting, tool configuration, and materially different context regime. A source or result attached to one entry does not establish transfer to another.

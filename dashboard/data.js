@@ -2,7 +2,7 @@ window.PROMPT_RESEARCH_DATA = {
   schemaVersion: "1.0",
   meta: {
     asOf: "2026-07-29",
-    generatedAt: "2026-07-29",
+    generatedAt: "2026-07-30",
     snapshotId: "professionalize-prompt@2026-07-28-eec246d1",
     bundleSha256: "eec246d1ed31cee3be7965516c31bf3225246ff462a1be6b0526f6f582dd841c",
     classification: "Experimental — well-specified frozen design; efficacy unproven",
@@ -363,7 +363,7 @@ window.PROMPT_RESEARCH_DATA = {
     { id: "T-001", family: "Outcome-first specification and ambiguity policy", skillForm: "professionalize-prompt", state: "Sourced; anchor evaluation blocked", falsifier: "A minimal direct specification matches usefulness with less effort and no added risk." },
     { id: "T-002", family: "Redundancy, contradiction, and obsolete-instruction detection", skillForm: "prompt-linter", state: "Specified; needs precision eval", falsifier: "The linter overcorrects valid constraints or fails to beat manual review." },
     { id: "T-003", family: "Surface-specific example selection", skillForm: "exemplar-curator", state: "Sourced; transfer-sensitive", falsifier: "Modern zero-shot baselines match examples or leakage and overfit erase gains." },
-    { id: "T-004", family: "Model and product control calibration", skillForm: "surface-calibrator", state: "Sourced; volatile", falsifier: "Prompt adaptation adds no value beyond settings or cannot stay current." },
+    { id: "T-004", family: "Model/product control calibration", skillForm: "internal professionalize-prompt model-profile gate", state: "Prototype challenger; behavior unscored", falsifier: "Prompt-level adaptation adds no value beyond settings or cannot stay current" },
     { id: "T-005", family: "Context relevance, ordering, retrieval, compaction, and budgeting", skillForm: "context-composer", state: "Sourced; priority candidate", falsifier: "An uncurated context baseline matches it across held-out tasks." },
     { id: "T-006", family: "Output schema plus semantic validation and repair", skillForm: "output-contract-engineer", state: "Sourced; priority candidate", falsifier: "Schema validity does not improve semantic success or repair adds regressions." },
     { id: "T-007", family: "Tool descriptions, schemas, response shaping, and errors", skillForm: "tool-contract-engineer", state: "Sourced; priority candidate", falsifier: "Tool linting does not improve success or increases tool-selection errors." },
@@ -381,21 +381,21 @@ window.PROMPT_RESEARCH_DATA = {
   ],
   ledgers: {
     claims: {
-      count: 36,
-      status: { "Grounded fact": 23, "Looks believable": 3, "Corroborated": 9, "Forecast/opinion": 1 },
-      confidence: { high: 22, medium: 14 }
+      count: 38,
+      status: { "Grounded fact": 24, "Looks believable": 4, "Corroborated": 9, "Forecast/opinion": 1 },
+      confidence: { high: 23, medium: 15 }
     },
     sources: {
-      count: 52,
-      type: { "research paper": 35, "official documentation": 8, "official engineering article": 4, "official help": 2, "direct artifact": 1, "direct observation": 1, "research preprint": 1 }
+      count: 55,
+      type: { "research paper": 35, "official documentation": 11, "official engineering article": 4, "official help": 2, "direct artifact": 1, "direct observation": 1, "research preprint": 1 }
     },
-    evalCases: { count: 14, status: { blocked: 1, designed: 12, deferred: 1 } },
-    assumptions: { count: 7, status: { open: 7 } },
-    changes: { count: 3, status: { validated: 1, "validated-design": 2 } }
+    evalCases: { count: 15, status: { blocked: 1, designed: 13, deferred: 1 } },
+    assumptions: { count: 8, status: { open: 8 } },
+    changes: { count: 4, status: { validated: 1, "validated-design": 2, prototype: 1 } }
   },
   promotionRunway: [
     { id: "01", name: "Discover", state: "done", note: "19 dynamic techniques mapped" },
-    { id: "02", name: "Source", state: "done", note: "52 sources registered" },
+    { id: "02", name: "Source", state: "done", note: "55 sources registered" },
     { id: "03", name: "Specify", state: "done", note: "Frozen skill and comparators" },
     { id: "04", name: "Evaluate", state: "current", note: "Pilot pending preflight" },
     { id: "05", name: "Approve", state: "pending", note: "Named human review required" },

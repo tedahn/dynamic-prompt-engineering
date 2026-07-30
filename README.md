@@ -29,6 +29,7 @@ The working thesis is deliberately narrow: a technique should become a skill onl
 - `chatgpt-project/`: validated, copy-ready ChatGPT Project initialization pack.
 - `research/`: current brief, plan, surface registry, technique taxonomy, next action, and live ledgers.
 - `research/evaluations/professionalize-prompt/`: immutable skill snapshot, baseline/ablation workflows, 45 fixtures, rubrics, score ledgers, and deterministic harness.
+- `skills/professionalize-prompt/`: model-aware challenger prototype; mechanically validated but behaviorally unscored and not approved for promotion.
 - `research/evaluations/codex-stateful-loop/`: event-sourced context loop, six evaluation conditions, state schemas, 12 development episodes, guarded Codex adapter, human promotion/rollback gates, and tests.
 - `dashboard/`: offline visual observatory plus a reproducible adapter from canonical research records.
 - `templates/`: local records for technique profiles and skill candidates.
