@@ -36,6 +36,11 @@ SUPPORTED_SCHEMA_KEYWORDS = {
     "enum", "items", "minimum", "minItems", "minLength", "pattern",
     "properties", "required", "title", "type", "uniqueItems",
 }
+PACKET_SCHEMA_PATHS = {
+    "review_submission": "schemas/review-submission.schema.json",
+    "adjudication": "schemas/adjudication.schema.json",
+    "human_decision": "schemas/human-decision.schema.json",
+}
 
 
 class ReviewError(RuntimeError):
@@ -83,6 +88,7 @@ def run_git_bytes(
     repo: Path,
     operation: str,
     *args: str,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     try:
         result = subprocess.run(
@@ -90,6 +96,7 @@ def run_git_bytes(
             cwd=repo,
             check=False,
             capture_output=True,
+            env=env,
         )
     except OSError as exc:
         diagnostic = sanitized_git_diagnostic(repo, str(exc))
@@ -102,13 +109,36 @@ def run_git_bytes(
     return result
 
 
-def git(repo: Path, *args: str, binary: bool = False) -> bytes | str:
+def sanitized_git_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in list(env):
+        if key == "GIT_CONFIG" or key.startswith("GIT_CONFIG_") or key in {
+            "GIT_DIFF_OPTS",
+            "GIT_EXTERNAL_DIFF",
+        }:
+            env.pop(key, None)
+    env.update({
+        "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "LC_ALL": "C",
+    })
+    return env
+
+
+def git(
+    repo: Path,
+    *args: str,
+    binary: bool = False,
+    env: dict[str, str] | None = None,
+) -> bytes | str:
     result = subprocess.run(
         ["git", *args],
         cwd=repo,
         check=False,
         capture_output=True,
         text=not binary,
+        env=env,
     )
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", "replace") if binary else result.stderr
@@ -116,8 +146,10 @@ def git(repo: Path, *args: str, binary: bool = False) -> bytes | str:
     return result.stdout
 
 
-def resolve_ref(repo: Path, ref: str) -> str:
-    return str(git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")).strip()
+def resolve_ref(repo: Path, ref: str, env: dict[str, str] | None = None) -> str:
+    return str(
+        git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}", env=env)
+    ).strip()
 
 
 def ensure_relative(path_text: str) -> str:
@@ -225,7 +257,7 @@ def instance_path(parent: str, key: str) -> str:
 
 def validate_schema_node(
     value: Any,
-    schema: dict[str, Any],
+    schema: dict[str, Any] | None,
     root_schema: dict[str, Any],
     path: str,
     errors: list[str],
@@ -331,11 +363,20 @@ def validate_json_schema(value: Any, schema: Any) -> list[str]:
     return errors
 
 
-def review_submission_schema() -> dict[str, Any]:
-    schema = load_json(ASSET_ROOT / "schemas" / "review-submission.schema.json")
-    if not isinstance(schema, dict):
-        raise ReviewError("Review submission schema is not an object")
-    return schema
+def load_packet_schemas(verified_files: dict[str, bytes]) -> dict[str, dict[str, Any]]:
+    schemas: dict[str, dict[str, Any]] = {}
+    for name, relative in PACKET_SCHEMA_PATHS.items():
+        data = verified_files.get(relative)
+        if data is None:
+            raise ReviewError(f"Verified packet schema is unavailable: {relative}")
+        try:
+            value = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ReviewError(f"Cannot load verified packet schema {relative}: {exc}") from exc
+        if not isinstance(value, dict):
+            raise ReviewError(f"Verified packet schema is not an object: {relative}")
+        schemas[name] = value
+    return schemas
 
 
 def file_record(repo: Path, base_sha: str, head_sha: str, relative: str) -> dict[str, Any]:
@@ -370,17 +411,50 @@ def changed_files(repo: Path, base_sha: str, head_sha: str) -> list[str]:
 
 
 def target_record(repo: Path, base_ref: str, head_ref: str) -> dict[str, str]:
-    base_sha = resolve_ref(repo, base_ref)
-    head_sha = resolve_ref(repo, head_ref)
+    env = sanitized_git_environment()
+    base_sha = resolve_ref(repo, base_ref, env=env)
+    head_sha = resolve_ref(repo, head_ref, env=env)
     diff = git(
         repo,
+        "-c", "color.ui=false",
+        "-c", f"core.attributesFile={os.devnull}",
+        "-c", "core.quotePath=true",
+        "-c", "diff.algorithm=myers",
+        "-c", "diff.indentHeuristic=false",
+        "-c", "diff.mnemonicPrefix=false",
+        "-c", "diff.noprefix=false",
+        "-c", "diff.relative=false",
+        "-c", "diff.renames=false",
+        "-c", "diff.submodule=short",
+        "-c", "diff.suppressBlankEmpty=false",
         "diff",
+        "--patch",
         "--binary",
         "--full-index",
+        "--no-color",
         "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--no-indent-heuristic",
+        "--diff-algorithm=myers",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--line-prefix=",
+        "--unified=3",
+        "--inter-hunk-context=0",
+        "--no-function-context",
+        "--output-indicator-new=+",
+        "--output-indicator-old=-",
+        "--output-indicator-context= ",
+        "--ignore-submodules=none",
+        "--submodule=short",
+        "--no-relative",
+        f"-O{os.devnull}",
         base_sha,
         head_sha,
+        "--",
         binary=True,
+        env=env,
     )
     assert isinstance(diff, bytes)
     return {
@@ -655,22 +729,47 @@ def exact_target(value: Any, target: dict[str, str]) -> bool:
     return isinstance(value, dict) and all(value.get(key) == target[key] for key in target)
 
 
-def validate_packet_index(bundle: Path, errors: list[str]) -> None:
+def validate_packet_index(bundle: Path, errors: list[str]) -> dict[str, bytes] | None:
     index_path = bundle / "packet-index.json"
     if not index_path.is_file():
         errors.append("missing packet-index.json")
-        return
+        return None
     index = load_json(index_path)
     files = index.get("files") if isinstance(index, dict) else None
     if not isinstance(files, dict) or not files:
         errors.append("packet-index.json has no file map")
-        return
+        return None
+    valid = True
+    verified_files: dict[str, bytes] = {}
+    required_schema_paths = set(PACKET_SCHEMA_PATHS.values())
     for relative, expected in files.items():
-        path = bundle / ensure_relative(str(relative))
+        try:
+            normalized = ensure_relative(str(relative))
+        except ReviewError as exc:
+            errors.append(f"packet-index.json path is invalid: {exc}")
+            valid = False
+            continue
+        path = bundle / normalized
         if not path.is_file():
             errors.append(f"packet file missing: {relative}")
-        elif sha256_file(path) != expected:
+            valid = False
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            errors.append(f"packet file cannot be read: {relative}: {exc}")
+            valid = False
+            continue
+        if sha256_bytes(data) != expected:
             errors.append(f"packet file hash mismatch: {relative}")
+            valid = False
+        elif normalized in required_schema_paths:
+            verified_files[normalized] = data
+    missing_schemas = sorted(required_schema_paths - set(verified_files))
+    if missing_schemas:
+        errors.append(f"packet-index.json lacks verified schemas: {', '.join(missing_schemas)}")
+        valid = False
+    return verified_files if valid else None
 
 
 def line_count_for_anchor(repo: Path, target: dict[str, str], relative: str) -> int | None:
@@ -686,13 +785,17 @@ def validate_submission(
     path: Path,
     role: str,
     manifest: dict[str, Any],
+    schema: dict[str, Any],
     errors: list[str],
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     if not path.is_file():
         errors.append(f"missing reviewer submission: {role}")
         return None, []
+    if schema is None:
+        errors.append(f"{role} submission validation skipped: verified packet schema unavailable")
+        return None, []
     value = load_json(path)
-    schema_errors = validate_json_schema(value, review_submission_schema())
+    schema_errors = validate_json_schema(value, schema)
     if schema_errors:
         errors.extend(f"{role} submission schema {item}" for item in schema_errors)
         return None, []
@@ -766,16 +869,22 @@ def validate_adjudication(
     manifest: dict[str, Any],
     submissions: dict[str, dict[str, Any]],
     findings: dict[str, dict[str, Any]],
+    schema: dict[str, Any] | None,
     errors: list[str],
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     path = bundle / "adjudication" / "adjudication.json"
     if not path.is_file():
         errors.append("missing adjudication/adjudication.json")
         return None, []
-    value = load_json(path)
-    if not isinstance(value, dict):
-        errors.append("adjudication is not an object")
+    if schema is None:
+        errors.append("adjudication validation skipped: verified packet schema unavailable")
         return None, []
+    value = load_json(path)
+    schema_errors = validate_json_schema(value, schema)
+    if schema_errors:
+        errors.extend(f"adjudication schema {item}" for item in schema_errors)
+        return None, []
+    assert isinstance(value, dict)
     if value.get("review_id") != manifest["review_id"] or not exact_target(value.get("target"), manifest["target"]):
         errors.append("adjudication target or review_id mismatch")
     adjudicator = value.get("adjudicator")
@@ -823,15 +932,21 @@ def validate_human_decision(
     bundle: Path,
     manifest: dict[str, Any],
     computed_gate: str,
+    schema: dict[str, Any] | None,
     errors: list[str],
 ) -> dict[str, Any] | None:
     path = bundle / "human-decision" / "decision.json"
     if not path.exists():
         return None
-    value = load_json(path)
-    if not isinstance(value, dict):
-        errors.append("human decision is not an object")
+    if schema is None:
+        errors.append("human decision validation skipped: verified packet schema unavailable")
         return None
+    value = load_json(path)
+    schema_errors = validate_json_schema(value, schema)
+    if schema_errors:
+        errors.extend(f"human decision schema {item}" for item in schema_errors)
+        return None
+    assert isinstance(value, dict)
     if value.get("review_id") != manifest["review_id"] or not exact_target(value.get("target"), manifest["target"]):
         errors.append("human decision target or review_id mismatch")
     if value.get("decision_owner") != manifest["decision_owner"] or value.get("actor_type") != "human":
@@ -868,7 +983,13 @@ def validate_bundle(args: argparse.Namespace) -> dict[str, Any]:
             errors.append("frozen target diff hash mismatch")
     except (KeyError, ReviewError) as exc:
         errors.append(f"frozen target cannot be verified: {exc}")
-    validate_packet_index(bundle, errors)
+    verified_files = validate_packet_index(bundle, errors)
+    schemas: dict[str, dict[str, Any]] = {}
+    if verified_files is not None:
+        try:
+            schemas = load_packet_schemas(verified_files)
+        except ReviewError as exc:
+            errors.append(f"verified packet schemas cannot be loaded: {exc}")
 
     submissions: dict[str, dict[str, Any]] = {}
     findings: dict[str, dict[str, Any]] = {}
@@ -879,6 +1000,7 @@ def validate_bundle(args: argparse.Namespace) -> dict[str, Any]:
             bundle / "submissions" / f"{role}.json",
             role,
             manifest,
+            schemas.get("review_submission"),
             errors,
         )
         if submission is not None:
@@ -897,7 +1019,7 @@ def validate_bundle(args: argparse.Namespace) -> dict[str, Any]:
         errors.append("reviewer identities are not unique")
 
     adjudication, dispositions = validate_adjudication(
-        bundle, manifest, submissions, findings, errors
+        bundle, manifest, submissions, findings, schemas.get("adjudication"), errors
     )
     blocking = [
         item
@@ -913,7 +1035,9 @@ def validate_bundle(args: argparse.Namespace) -> dict[str, Any]:
             f"adjudication merge_gate {adjudication.get('merge_gate')} does not match computed {computed_gate}"
         )
         computed_gate = "blocked"
-    decision = validate_human_decision(bundle, manifest, computed_gate, errors)
+    decision = validate_human_decision(
+        bundle, manifest, computed_gate, schemas.get("human_decision"), errors
+    )
     if errors:
         computed_gate = "blocked"
     decision_status = decision.get("decision") if decision else "provisional"

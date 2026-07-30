@@ -1,7 +1,10 @@
 {
   "schema_version": "2.0",
   "experiment_id": "EXP-PP-V2-PILOT",
-  "status": "pilot-authorized-frozen",
+  "status": "blocked-artifact-drift",
+  "authorization_invalidated_at": "2026-07-30",
+  "authorization_invalidated_reason": "The frozen hashes and byte counts for scripts/run_pilot.py and tests/test_run_pilot.py no longer match the reviewed artifacts. The prior authorization is retained only as historical evidence and must not be used to execute this pilot.",
+  "replacement_preflight_required": true,
   "authorized_at": "2026-07-28T21:49:00Z",
   "authorization_evidence": "Current Codex task user message: yes go ahead and do that",
   "owner": "Ted Ahn (current workspace owner)",

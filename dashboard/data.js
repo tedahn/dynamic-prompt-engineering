@@ -149,7 +149,7 @@ window.PROMPT_RESEARCH_DATA = {
   ],
   "pilot": {
     "experimentId": "EXP-PP-V2-PILOT",
-    "status": "pilot-authorized-frozen",
+    "status": "blocked-artifact-drift",
     "frozenArtifacts": "frozen",
     "workflows": [
       "B00_RAW_1CALL",
@@ -762,60 +762,62 @@ window.PROMPT_RESEARCH_DATA = {
   ],
   "ledgers": {
     "claims": {
-      "count": 56,
+      "count": 57,
       "status": {
         "Grounded fact": 32,
         "Looks believable": 4,
         "Corroborated": 10,
         "Forecast/opinion": 2,
-        "Experimental": 8
+        "Experimental": 9
       },
       "confidence": {
         "high": 36,
-        "medium": 18,
+        "medium": 19,
         "low": 2
       }
     },
     "sources": {
-      "count": 68,
+      "count": 69,
       "type": {
         "official documentation": 11,
         "official help": 2,
         "official engineering article": 4,
-        "direct artifact": 6,
+        "direct artifact": 7,
         "research paper": 36,
-        "direct observation": 5,
+        "direct observation": 4,
         "research preprint": 2,
         "vendor technical report": 1,
-        "direct technical report": 1
+        "direct technical report": 1,
+        "author-summarized remediation record": 1
       }
     },
     "evalCases": {
-      "count": 28,
+      "count": 29,
       "status": {
         "blocked": 1,
         "designed": 14,
         "deferred": 1,
         "mechanically-validated": 5,
         "development-diagnostic": 2,
-        "remediation-validated": 5
+        "remediation-validated": 5,
+        "remediation-validated-pending-head-review": 1
       }
     },
     "assumptions": {
-      "count": 13,
+      "count": 14,
       "status": {
-        "open": 13
+        "open": 14
       }
     },
     "changes": {
-      "count": 12,
+      "count": 13,
       "status": {
         "validated": 1,
         "validated-design": 4,
         "mechanically-validated-prototype": 1,
         "mechanically-validated-automation": 1,
         "development-reviewed-prototype": 1,
-        "remediation-validated-pending-head-review": 1,
+        "remediation-validated-pending-head-review": 2,
         "mechanically-validated-pending-head-review": 1,
         "prototype": 1,
         "remediation-validated": 1
@@ -833,7 +835,7 @@ window.PROMPT_RESEARCH_DATA = {
       "id": "02",
       "name": "Source",
       "state": "done",
-      "note": "68 sources registered"
+      "note": "69 sources registered"
     },
     {
       "id": "03",

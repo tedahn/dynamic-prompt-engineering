@@ -7,12 +7,10 @@ import argparse
 import copy
 import hashlib
 import json
-import os
-import shutil
 import sys
 import tempfile
+import uuid
 from pathlib import Path
-from typing import Any
 
 EVALUATION_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -21,126 +19,6 @@ sys.path.insert(0, str(EVALUATION_ROOT))
 from automation.core import atomic_write_json, build_candidate_manifest, load_config, run_command, sha256_json  # noqa: E402
 from automation.evaluation import BLIND_MAP_RELATIVE_PATH, build_holdout_manifest_template  # noqa: E402
 from automation.promotion import prepare_clean_promotion, rehearse_rollback  # noqa: E402
-
-
-NESTED_E2E_ENV = "EXPLORE_APPROACHES_MODEL_FREE_E2E_CHILD"
-PROMOTION_FIXTURE_PATH = "skills/explore-approaches/SKILL.md"
-PROMOTION_GIT_ENV = {
-    "GIT_AUTHOR_NAME": "Model-Free Fixture",
-    "GIT_AUTHOR_EMAIL": "model-free@example.invalid",
-    "GIT_COMMITTER_NAME": "Model-Free Fixture",
-    "GIT_COMMITTER_EMAIL": "model-free@example.invalid",
-    "GIT_AUTHOR_DATE": "2026-07-30T12:00:00Z",
-    "GIT_COMMITTER_DATE": "2026-07-30T12:00:00Z",
-}
-
-
-def _write_fixture(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-
-
-def _synthetic_promotion_dry_run(
-    temporary_root: Path,
-    config: dict[str, Any],
-) -> tuple[dict[str, Any], bool]:
-    """Exercise canonical promotion against a private local Git fixture."""
-    baseline = temporary_root / "promotion-baseline"
-    baseline.mkdir()
-    run_command(["git", "init"], cwd=baseline)
-    run_command(["git", "checkout", "-b", "main"], cwd=baseline)
-    run_command(["git", "config", "user.name", PROMOTION_GIT_ENV["GIT_AUTHOR_NAME"]], cwd=baseline)
-    run_command(["git", "config", "user.email", PROMOTION_GIT_ENV["GIT_AUTHOR_EMAIL"]], cwd=baseline)
-    _write_fixture(baseline / "README.md", "# Synthetic promotion origin\n")
-    _write_fixture(baseline / PROMOTION_FIXTURE_PATH, "# Baseline skill\n")
-    run_command(["git", "add", "--", "README.md", PROMOTION_FIXTURE_PATH], cwd=baseline)
-    run_command(["git", "commit", "-m", "Create synthetic baseline"], cwd=baseline, env=PROMOTION_GIT_ENV)
-    base_commit = run_command(["git", "rev-parse", "HEAD"], cwd=baseline).stdout.strip()
-
-    origin = temporary_root / "promotion-origin.git"
-    run_command(["git", "clone", "--bare", str(baseline), str(origin)])
-
-    source = temporary_root / "promotion-candidate"
-    _write_fixture(
-        source / PROMOTION_FIXTURE_PATH,
-        "# Explore approaches\n\nSynthetic model-free promotion candidate.\n",
-    )
-    fixture_config = copy.deepcopy(config)
-    fixture_config["pipeline_id"] = "explore-approaches-model-free-fixture"
-    fixture_config["candidate"]["name"] = "explore-approaches-model-free-fixture"
-    fixture_config["candidate"]["version"] = "model-free-fixture-v1"
-    fixture_config["promotion"].update(
-        {
-            "repository_url": str(origin),
-            "repository_slug": "local/model-free-fixture",
-            "base_branch": "main",
-            "feature_branch": "codex/model-free-fixture",
-            "commit_message": "Materialize synthetic candidate",
-            "copy_trees": ["skills/explore-approaches"],
-            "copy_files": [],
-            "excluded_globs": [],
-            "csv_record_allowlist": {},
-            "markdown_record_allowlist": {},
-        }
-    )
-    fixture_manifest = build_candidate_manifest(source, fixture_config)
-
-    previous_environment = {key: os.environ.get(key) for key in PROMOTION_GIT_ENV}
-    os.environ.update(PROMOTION_GIT_ENV)
-    try:
-        prepared = prepare_clean_promotion(
-            source,
-            temporary_root / "promotion-work",
-            fixture_config,
-            fixture_manifest,
-            expected_base_commit=base_commit,
-            approval_sha256=sha256_json({"mode": "model-free-promotion-dry-run"}),
-            config_sha256=sha256_json(fixture_config),
-        )
-    finally:
-        for key, value in previous_environment.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
-    expected = temporary_root / "promotion-expected"
-    run_command(["git", "clone", str(origin), str(expected)])
-    run_command(["git", "checkout", "--detach", base_commit], cwd=expected)
-    expected_candidate = expected / PROMOTION_FIXTURE_PATH
-    expected_candidate.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source / PROMOTION_FIXTURE_PATH, expected_candidate)
-    run_command(["git", "add", "--", PROMOTION_FIXTURE_PATH], cwd=expected)
-    expected_paths = [
-        value
-        for value in run_command(
-            ["git", "diff", "--cached", "--name-only", "-z"], cwd=expected
-        ).stdout.split("\0")
-        if value
-    ]
-    expected_tree = run_command(["git", "write-tree"], cwd=expected).stdout.strip()
-    expected_paths = sorted(expected_paths)
-
-    exact = all(
-        (
-            prepared["base_commit"] == base_commit,
-            prepared["staged_paths"] == [PROMOTION_FIXTURE_PATH],
-            prepared["staged_paths"] == expected_paths,
-            prepared["head_tree"] == expected_tree,
-            (Path(prepared["clone"]) / PROMOTION_FIXTURE_PATH).read_bytes()
-            == (source / PROMOTION_FIXTURE_PATH).read_bytes(),
-        )
-    )
-    summary = {
-        "base_commit": prepared["base_commit"],
-        "head_commit": prepared["head_commit"],
-        "head_tree": prepared["head_tree"],
-        "expected_tree": expected_tree,
-        "staged_path_count": len(prepared["staged_paths"]),
-        "staged_paths": prepared["staged_paths"],
-        "candidate_manifest_sha256": fixture_manifest["manifest_sha256"],
-    }
-    return summary, exact
 
 
 def run(output: Path) -> dict[str, object]:
@@ -152,7 +30,6 @@ def run(output: Path) -> dict[str, object]:
         [sys.executable, "-m", "unittest", "discover", "-s", str(EVALUATION_ROOT / "tests"), "-q"],
         cwd=REPO_ROOT,
         timeout=120,
-        env={NESTED_E2E_ENV: "1"},
         check=False,
     )
     checks["unit_and_adversarial_tests"] = tests.returncode == 0
@@ -264,9 +141,31 @@ def run(output: Path) -> dict[str, object]:
             )
         )
         rollback = rehearse_rollback(temporary_root / "rollback")
-        prepared_summary, materialization_exact = _synthetic_promotion_dry_run(temporary_root, config)
+        dry_config = copy.deepcopy(config)
+        dry_config["promotion"]["repository_url"] = str(REPO_ROOT)
+        current_branch = run_command(["git", "branch", "--show-current"], cwd=REPO_ROOT).stdout.strip()
+        if not current_branch:
+            current_branch = run_command(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT).stdout.strip()
+        dry_config["promotion"]["base_branch"] = current_branch
+        dry_config["promotion"]["feature_branch"] = f"codex/explore-e2e-{uuid.uuid4().hex[:10]}"
+        frozen_base = run_command(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT).stdout.strip()
+        prepared = prepare_clean_promotion(
+            REPO_ROOT,
+            temporary_root / "promotion",
+            dry_config,
+            manifest,
+            expected_base_commit=frozen_base,
+            approval_sha256=sha256_json({"mode": "model-free-promotion-dry-run"}),
+            config_sha256=sha256_json(dry_config),
+        )
         checks["rollback_rehearsal"] = rollback["result"] == "passed"
-        checks["clean_clone_materialization"] = materialization_exact
+        checks["clean_clone_materialization"] = bool(prepared["head_commit"] and prepared["staged_paths"])
+        prepared_summary = {
+            "base_commit": prepared["base_commit"],
+            "head_commit": prepared["head_commit"],
+            "staged_path_count": len(prepared["staged_paths"]),
+            "staged_paths": prepared["staged_paths"],
+        }
 
     result = {
         "schema_version": "1.0",

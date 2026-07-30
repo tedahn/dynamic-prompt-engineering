@@ -21,6 +21,14 @@ class RunPilotTests(unittest.TestCase):
     def setUp(self) -> None:
         self.inputs = RUNNER.load_pilot_inputs()
 
+    def test_canonical_experiment_is_blocked_after_frozen_artifact_drift(self) -> None:
+        self.assertEqual(self.inputs.experiment["status"], "blocked-artifact-drift")
+        self.assertTrue(self.inputs.experiment["replacement_preflight_required"])
+        self.assertIn(
+            "Experiment is not pilot-authorized-frozen",
+            RUNNER.validate_pilot_inputs(self.inputs),
+        )
+
     def test_scored_plan_is_deterministic_latin_square_with_independent_blinding(self) -> None:
         plan_a, blind_a = RUNNER.generate_scored_plan(
             self.inputs, "run-test", plan_seed=101, blind_seed=202

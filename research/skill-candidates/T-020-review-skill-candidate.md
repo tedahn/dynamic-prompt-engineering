@@ -31,7 +31,7 @@ The candidate operationalizes review independence, provenance, target integrity,
 - **Deterministic tests:** `research/evaluations/skill-review-process/tests/test_review_bundle.py`
 - **Development target:** GitHub PR #1 frozen at head `8371f0f9634bf86e3417bae09772418034239969`.
 - **Current result:** The original frozen PR #1 cycle used eight unit tests and upheld seven findings: three open P1 and four open P2. The current validator adds exhaustive schema and Git-failure coverage, with 16 bundle tests and 20 full review-process tests passing. The PR #1 packet remains immutable and its computed merge gate remains `changes_required`.
-- **Remediation status:** Targeted mechanical validation addresses all seven PR #1 findings and the two P1 plus seven P2 findings from exact-head review PR-003, with 25 pilot, 17 context-composer, 58 explore-approaches lifecycle, and 20 review-process tests passing. These checks are not review closure evidence. A replacement exact-head review is still required before merge.
+- **Remediation status:** Targeted mechanical validation addresses the recorded PR #1 and author-summarized PR-003 findings plus the preserved PR-004 gaps, with 26 pilot, 17 context-composer, 62 explore-approaches lifecycle, and 25 review-process tests passing. These checks are not review closure evidence. A replacement exact-head review is still required before merge.
 - **Open gate:** Run a new frozen-head review before any merge decision. Separately run a fresh blinded matched-budget B0/B1/C1/C2 holdout with resource measures and independent human grading before promotion or installation.
 
 ## Operations

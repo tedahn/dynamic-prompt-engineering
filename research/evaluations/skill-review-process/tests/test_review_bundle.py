@@ -92,13 +92,21 @@ class ReviewBundleTests(unittest.TestCase):
             "confidence": "high",
         }
 
+    def _packet_schemas(self) -> dict[str, dict]:
+        errors: list[str] = []
+        verified_files = REVIEW.validate_packet_index(self.bundle, errors)
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(verified_files)
+        return REVIEW.load_packet_schemas(verified_files)
+
     def _schema_errors(self, value: object) -> list[str]:
         role = "evidence-methodology"
         path = self.bundle / "submissions" / f"{role}.json"
         REVIEW.write_json(path, value)
         errors: list[str] = []
         submission, findings = REVIEW.validate_submission(
-            self.repo, path, role, self._manifest(), errors
+            self.repo, path, role, self._manifest(),
+            self._packet_schemas()["review_submission"], errors,
         )
         self.assertIsNone(submission)
         self.assertEqual(findings, [])
@@ -117,13 +125,17 @@ class ReviewBundleTests(unittest.TestCase):
             reviewer = "same" if shared_id else f"reviewer-{index}"
             REVIEW.write_json(self.bundle / "submissions" / f"{role}.json", self._submission(role, reviewer, findings))
 
-    def _write_adjudication(self, dispositions: list[dict] | None = None, gate: str = "eligible_for_human_decision") -> None:
+    def _adjudication(
+        self,
+        dispositions: list[dict] | None = None,
+        gate: str = "eligible_for_human_decision",
+    ) -> dict:
         manifest = self._manifest()
         hashes = {
             role: REVIEW.sha256_file(self.bundle / "submissions" / f"{role}.json")
             for role in REVIEW.REQUIRED_ROLES
         }
-        REVIEW.write_json(self.bundle / "adjudication" / "adjudication.json", {
+        return {
             "schema_version": "1.0", "review_id": manifest["review_id"],
             "target": manifest["target"],
             "adjudicator": {
@@ -133,7 +145,31 @@ class ReviewBundleTests(unittest.TestCase):
             "submission_hashes": hashes, "finding_dispositions": dispositions or [],
             "conflicts": [], "merge_gate": gate, "rationale": "Evidence checked.",
             "limitations": [],
-        })
+        }
+
+    def _write_adjudication(
+        self,
+        dispositions: list[dict] | None = None,
+        gate: str = "eligible_for_human_decision",
+        value: dict | None = None,
+    ) -> None:
+        REVIEW.write_json(
+            self.bundle / "adjudication" / "adjudication.json",
+            value if value is not None else self._adjudication(dispositions, gate),
+        )
+
+    def _human_decision(self) -> dict:
+        manifest = self._manifest()
+        return {
+            "schema_version": "1.0", "review_id": manifest["review_id"],
+            "target": manifest["target"], "decision_owner": manifest["decision_owner"],
+            "actor_type": "human", "decision": "approved",
+            "decided_at": "2026-07-30T00:03:00Z", "rationale": "Exact target reviewed.",
+            "conditions": [], "dissent": [],
+            "reversal_evidence": ["Target or evidence changes."],
+            "authorized_actions": ["Merge the exact reviewed target."],
+            "forbidden_actions": ["Promote or install the skill."],
+        }
 
     def _validate(self, write: bool = False) -> dict:
         return REVIEW.validate_bundle(argparse.Namespace(
@@ -251,6 +287,131 @@ class ReviewBundleTests(unittest.TestCase):
     def test_schema_validator_rejects_unknown_vocabulary(self) -> None:
         with self.assertRaisesRegex(REVIEW.ReviewError, "Unsupported JSON Schema keyword"):
             REVIEW.validate_json_schema("value", {"type": "string", "maxLength": 3})
+
+    def test_adjudication_schema_rejects_missing_nested_type_and_additional_property(self) -> None:
+        self._write_reviews()
+        base = self._adjudication()
+        cases: list[tuple[str, dict, tuple[str, ...]]] = []
+
+        value = json.loads(json.dumps(base))
+        value.pop("limitations")
+        cases.append(("missing", value, ("$:", "missing required property 'limitations'")))
+
+        value = json.loads(json.dumps(base))
+        value["adjudicator"]["model"] = 7
+        cases.append(("nested type", value, ("$.adjudicator.model", "string or null")))
+
+        value = json.loads(json.dumps(base))
+        value["review_id"] = "wrong-review"
+        value["adjudicator"]["unexpected"] = True
+        cases.append((
+            "additional property",
+            value,
+            ("$.adjudicator", "additional property 'unexpected' is not allowed"),
+        ))
+
+        for label, value, fragments in cases:
+            with self.subTest(label=label):
+                self._write_adjudication(value=value)
+                result = self._validate()
+                message = "\n".join(result["errors"])
+                self.assertFalse(result["ok"])
+                self.assertIn("adjudication schema", message)
+                for fragment in fragments:
+                    self.assertIn(fragment, message)
+                self.assertNotIn("adjudication target or review_id mismatch", message)
+
+    def test_human_decision_schema_rejects_missing_nested_type_and_additional_property(self) -> None:
+        self._write_reviews()
+        self._write_adjudication()
+        base = self._human_decision()
+        cases: list[tuple[str, dict, tuple[str, ...]]] = []
+
+        value = json.loads(json.dumps(base))
+        value.pop("dissent")
+        cases.append(("missing", value, ("$:", "missing required property 'dissent'")))
+
+        value = json.loads(json.dumps(base))
+        value["conditions"] = [7]
+        cases.append(("nested type", value, ("$.conditions[0]", "expected type string")))
+
+        value = json.loads(json.dumps(base))
+        value["review_id"] = "wrong-review"
+        value["target"]["unexpected"] = True
+        cases.append((
+            "additional property",
+            value,
+            ("$.target", "additional property 'unexpected' is not allowed"),
+        ))
+
+        path = self.bundle / "human-decision" / "decision.json"
+        for label, value, fragments in cases:
+            with self.subTest(label=label):
+                REVIEW.write_json(path, value)
+                result = self._validate()
+                message = "\n".join(result["errors"])
+                self.assertFalse(result["ok"])
+                self.assertIn("human decision schema", message)
+                for fragment in fragments:
+                    self.assertIn(fragment, message)
+                self.assertNotIn("human decision target or review_id mismatch", message)
+
+    def test_validation_uses_packet_frozen_schemas_when_local_assets_drift(self) -> None:
+        self._write_reviews()
+        self._write_adjudication()
+        drift_root = self.root / "drifted-assets"
+        (drift_root / "schemas").mkdir(parents=True)
+        (drift_root / "schemas" / "review-submission.schema.json").write_text(
+            '{"type":"null"}\n', encoding="utf-8"
+        )
+        with mock.patch.object(REVIEW, "ASSET_ROOT", drift_root):
+            result = self._validate()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["completed_roles"], sorted(REVIEW.REQUIRED_ROLES))
+
+    def test_tampered_packet_schema_blocks_before_artifact_validation(self) -> None:
+        self._write_reviews()
+        self._write_adjudication()
+        schema_path = self.bundle / "schemas" / "review-submission.schema.json"
+        schema_path.write_text("{}\n", encoding="utf-8")
+        result = self._validate()
+        message = "\n".join(result["errors"])
+        self.assertFalse(result["ok"])
+        self.assertIn("packet file hash mismatch: schemas/review-submission.schema.json", message)
+        self.assertIn("verified packet schema unavailable", message)
+        self.assertEqual(result["completed_roles"], [])
+
+    def test_diff_fingerprint_is_stable_across_git_configuration(self) -> None:
+        baseline = REVIEW.target_record(self.repo, self.base, self.head)
+        order_file = self.root / "diff-order"
+        order_file.write_text("skill.md\napp.py\n", encoding="utf-8")
+        attributes_file = self.root / "global-attributes"
+        attributes_file.write_text("*.py binary\n", encoding="utf-8")
+        for key, value in (
+            ("color.ui", "always"),
+            ("core.attributesFile", str(attributes_file)),
+            ("core.quotePath", "false"),
+            ("diff.algorithm", "patience"),
+            ("diff.indentHeuristic", "true"),
+            ("diff.mnemonicPrefix", "true"),
+            ("diff.noprefix", "true"),
+            ("diff.orderFile", str(order_file)),
+            ("diff.relative", "true"),
+            ("diff.renames", "copies"),
+            ("diff.submodule", "diff"),
+            ("diff.suppressBlankEmpty", "true"),
+        ):
+            self._git("config", key, value)
+        hostile_environment = {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "diff.noprefix",
+            "GIT_CONFIG_VALUE_0": "true",
+            "GIT_DIFF_OPTS": "-U99",
+            "GIT_EXTERNAL_DIFF": "/does/not/exist",
+        }
+        with mock.patch.dict(REVIEW.os.environ, hostile_environment, clear=False):
+            configured = REVIEW.target_record(self.repo, self.base, self.head)
+        self.assertEqual(configured, baseline)
 
     def test_blob_at_distinguishes_missing_paths_from_git_failures(self) -> None:
         self.assertEqual(REVIEW.blob_at(self.repo, self.head, "app.py"), b"VALUE = 2\nSAFE = True\n")
