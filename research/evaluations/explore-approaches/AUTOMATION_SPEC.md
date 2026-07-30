@@ -10,9 +10,9 @@ Automate the complete explore-approaches lifecycle: freeze a candidate, consume 
 
 # Success criteria
 - Every stage is resumable, idempotent, content-addressed, and fail-closed.
-- Missing telemetry, incomplete trials, insufficient task-cluster coverage, provisional-only grading, contamination, runtime drift, or unresolved disagreement yields inconclusive or invalid evidence, never promotion.
+- Missing telemetry, incomplete trials, insufficient task-cluster coverage, inadequate per-mechanism critical-gate opportunities, a weak exact one-sided zero-failure bound, provisional-only grading, contamination, runtime drift, or unresolved disagreement yields inconclusive or invalid evidence, never promotion.
 - Every run has one private 32-byte blinding key under a one-run/one-key contract whose signed SHA-256 commitment is bound through the plan, evidence manifest, summary, and approval; packet/candidate identifiers and presentation order are domain-separated HMAC outputs rather than recoverable public-seed labels. Summary evidence and signed approval both name `private/grading/blind-map.jsonl` and bind its SHA-256, while the evidence-manifest SHA-256 remains the canonical graph root.
-- Promotion requires zero critical candidate failures, every configured quality/resource/domain threshold, human-final review, and an unexpired cryptographically verified approval bound to the exact evidence and candidate manifest.
+- Promotion requires zero critical candidate failures, at least three independent task-cluster opportunities for every configured critical mechanism, an exact one-sided 95% zero-failure upper bound no greater than 0.65 for each mechanism, every configured quality/resource/domain threshold, human-final review, and an unexpired cryptographically verified approval bound to the exact evidence and candidate manifest.
 - Git promotion never stages the dirty source tree: it copies approved regular files and reconstructs approved ledger/taxonomy records in a clean checkout.
 - Installation invokes the configured system skill installer at the immutable merged commit into isolated staging, verifies the full approved manifest and installed subtree, creates a recoverable backup, canaries in a fresh process, and restores the backup on failure.
 

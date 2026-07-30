@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +48,65 @@ class LifecycleCliTest(unittest.TestCase):
             idempotency_key="test:awaiting-human-approval",
         )
         return store, lifecycle
+
+    def test_git_head_ignores_hostile_git_routing_and_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "target"
+            foreign = root / "foreign"
+            clean_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+            clean_env.update({"LANG": "C", "LC_ALL": "C"})
+
+            def create_repository(path: Path, content: str) -> str:
+                path.mkdir()
+                subprocess.run(["git", "init", "-b", "main"], cwd=path, env=clean_env, check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.name", "Lifecycle Test"], cwd=path, env=clean_env, check=True)
+                subprocess.run(["git", "config", "user.email", "lifecycle@example.invalid"], cwd=path, env=clean_env, check=True)
+                (path / "payload.txt").write_text(content, encoding="utf-8")
+                subprocess.run(["git", "add", "payload.txt"], cwd=path, env=clean_env, check=True)
+                subprocess.run(["git", "commit", "-m", content], cwd=path, env=clean_env, check=True, capture_output=True)
+                return subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=path,
+                    env=clean_env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+
+            expected_head = create_repository(target, "target")
+            foreign_head = create_repository(foreign, "foreign")
+            self.assertNotEqual(expected_head, foreign_head)
+            hostile_config = root / "hostile.gitconfig"
+            hostile_config.write_text("[core]\n\tbare = true\n", encoding="utf-8")
+            hostile_env = {
+                "GIT_DIR": str(foreign / ".git"),
+                "GIT_WORK_TREE": str(foreign),
+                "GIT_OBJECT_DIRECTORY": str(foreign / ".git" / "objects"),
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(foreign / ".git" / "objects"),
+                "GIT_INDEX_FILE": str(foreign / ".git" / "index"),
+                "GIT_REPLACE_REF_BASE": "refs/hostile-replacements/",
+                "GIT_CONFIG_SYSTEM": str(hostile_config),
+                "GIT_CONFIG_GLOBAL": str(hostile_config),
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.bare",
+                "GIT_CONFIG_VALUE_0": "true",
+            }
+            with (
+                mock.patch.dict(os.environ, hostile_env, clear=False),
+                mock.patch("subprocess.run", wraps=subprocess.run) as runner,
+            ):
+                resolved = CLI._git_head(target)
+
+            self.assertEqual(resolved, expected_head)
+            argv = runner.call_args.args[0]
+            supplied_env = runner.call_args.kwargs["env"]
+            self.assertIn("--no-replace-objects", argv)
+            for key in hostile_env:
+                if key not in {"GIT_CONFIG_GLOBAL"}:
+                    self.assertNotIn(key, supplied_env)
+            self.assertEqual(supplied_env["GIT_CONFIG_GLOBAL"], os.devnull)
+            self.assertEqual(supplied_env["GIT_CONFIG_NOSYSTEM"], "1")
 
     def test_frozen_config_is_used_instead_of_caller_substitution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

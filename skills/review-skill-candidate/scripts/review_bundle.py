@@ -14,6 +14,7 @@ import subprocess
 import sys
 from typing import Any
 import unicodedata
+from urllib.parse import quote_from_bytes
 
 
 SCHEMA_VERSION = "1.1"
@@ -35,6 +36,7 @@ REQUIRED_ROLES = (
     "engineering-reproducibility",
     "skill-safety-operations",
 )
+MARKDOWN_DISPLAY_PREFIX = "utf8pct-v1:"
 ALLOWED_SEVERITIES = {"P0", "P1", "P2", "P3"}
 ALLOWED_FINDING_STATUSES = {
     "open",
@@ -94,6 +96,18 @@ def canonical_identity(value: Any) -> str | None:
         return None
     normalized = unicodedata.normalize("NFKC", value).strip().casefold()
     return normalized or None
+
+
+def markdown_display_atom(value: Any) -> str:
+    """Return a reversible Markdown-safe display form for an untrusted scalar.
+
+    Packet JSON remains canonical. Generated Markdown uses this explicitly tagged,
+    UTF-8 percent encoding so repository paths and claims cannot create headings,
+    lists, fences, links, HTML, control characters, or additional table cells.
+    """
+    if not isinstance(value, str):
+        value = str(value)
+    return MARKDOWN_DISPLAY_PREFIX + quote_from_bytes(value.encode("utf-8"), safe=b"")
 
 
 def sanitized_git_diagnostic(repo: Path, value: bytes | str, limit: int = 300) -> str:
@@ -627,28 +641,36 @@ def target_record(repo: Path, base_ref: str, head_ref: str) -> dict[str, str]:
 def render_context(manifest: dict[str, Any]) -> str:
     target = manifest["target"]
     evidence_rows = "\n".join(
-        f"| {index:03d} | `{row['path']}` | {row['state']} | "
-        f"`{row['head_sha256'] or row['base_sha256']}` |"
+        f"| {index:03d} | `{markdown_display_atom(row['path'])}` | "
+        f"{markdown_display_atom(row['state'])} | "
+        f"`{markdown_display_atom(row['head_sha256'] or row['base_sha256'])}` |"
         for index, row in enumerate(manifest["evidence_index"], 1)
     )
     validation = "\n".join(
-        f"- {item['claim']} — `{item['artifact_path']}` @ `{item['artifact_sha256']}`"
+        f"- {markdown_display_atom(item['claim'])} — "
+        f"`{markdown_display_atom(item['artifact_path'])}` @ "
+        f"`{markdown_display_atom(item['artifact_sha256'])}`"
         for item in manifest["validation_records"]
     ) or "- None recorded"
-    policies = "\n".join(f"- `{row['path']}`" for row in manifest["policy_index"])
-    packet_authors = ", ".join(f"`{item}`" for item in manifest["packet_author_ids"])
-    return f"""# {manifest['review_id']} — frozen review context
+    policies = "\n".join(
+        f"- `{markdown_display_atom(row['path'])}`" for row in manifest["policy_index"]
+    )
+    packet_authors = ", ".join(
+        f"`{markdown_display_atom(item)}`" for item in manifest["packet_author_ids"]
+    )
+    return f"""# {markdown_display_atom(manifest['review_id'])} — frozen review context
 
-- Version: {manifest['schema_version']}
-- Built at: {manifest['built_at']}
-- Owner: {manifest['decision_owner']}
+- Version: {markdown_display_atom(manifest['schema_version'])}
+- Built at: {markdown_display_atom(manifest['built_at'])}
+- Owner: {markdown_display_atom(manifest['decision_owner'])}
 - Packet author identities: {packet_authors}
 - Consumer: isolated reviewers and adjudicator
 - Supported gate: merge readiness only
-- Repository: {manifest['repository']}
-- Base SHA: `{target['base_sha']}`
-- Head SHA: `{target['head_sha']}`
-- Diff SHA-256: `{target['diff_sha256']}`
+- Repository: {markdown_display_atom(manifest['repository'])}
+- Base SHA: `{markdown_display_atom(target['base_sha'])}`
+- Head SHA: `{markdown_display_atom(target['head_sha'])}`
+- Diff SHA-256: `{markdown_display_atom(target['diff_sha256'])}`
+- Dynamic-value display encoding: `utf8pct-v1`; percent-decode the payload as UTF-8 to recover the exact value in `manifest.json`.
 - Context budget: changed files plus allowlisted policies; retrieve exact excerpts only as needed
 - Refresh trigger: any target, policy, evaluation, or authority change
 
@@ -744,14 +766,15 @@ def render_assignment(manifest: dict[str, Any], role: str) -> str:
     target = manifest["target"]
     return f"""# Assignment — {role}
 
-Use `$review-skill-candidate` to review `{manifest['repository']}` at the immutable target below.
+Use `$review-skill-candidate` to review `{markdown_display_atom(manifest['repository'])}` at the immutable target below.
 
-- Review ID: `{manifest['review_id']}`
-- Base SHA: `{target['base_sha']}`
-- Head SHA: `{target['head_sha']}`
-- Diff SHA-256: `{target['diff_sha256']}`
+- Review ID: `{markdown_display_atom(manifest['review_id'])}`
+- Base SHA: `{markdown_display_atom(target['base_sha'])}`
+- Head SHA: `{markdown_display_atom(target['head_sha'])}`
+- Diff SHA-256: `{markdown_display_atom(target['diff_sha256'])}`
 - Decision: merge eligibility for named-human review only
 - Role: `{role}`
+- Dynamic-value display encoding: `utf8pct-v1`; percent-decode the payload as UTF-8 to recover the exact value in `manifest.json`.
 
 Read `context-pack.md`, then inspect the frozen commits and only the source pointers needed for this role. {ROLE_FOCUS[role]}
 
@@ -763,19 +786,22 @@ Write exactly one JSON object matching `schemas/review-submission.schema.json` t
 
 def render_gate(manifest: dict[str, Any]) -> str:
     target = manifest["target"]
-    packet_authors = ", ".join(f"`{item}`" for item in manifest["packet_author_ids"])
-    return f"""# {manifest['review_id']} — merge-readiness decision
+    packet_authors = ", ".join(
+        f"`{markdown_display_atom(item)}`" for item in manifest["packet_author_ids"]
+    )
+    return f"""# {markdown_display_atom(manifest['review_id'])} — merge-readiness decision
 
 - Gate: G5 review handoff; merge decision only
 - Status: proposed
-- Decision owner: {manifest['decision_owner']}
-- Requested by: {manifest['requested_by']}
+- Decision owner: {markdown_display_atom(manifest['decision_owner'])}
+- Requested by: {markdown_display_atom(manifest['requested_by'])}
 - Packet author identities: {packet_authors}
-- Opened at: {manifest['built_at']}
+- Opened at: {markdown_display_atom(manifest['built_at'])}
 - Decided at: null
 - Expires at: target or policy change
 - Supersedes: null
-- Evidence snapshot: `{target['head_sha']} / {target['diff_sha256']}`
+- Evidence snapshot: `{markdown_display_atom(target['head_sha'])} / {markdown_display_atom(target['diff_sha256'])}`
+- Dynamic-value display encoding: `utf8pct-v1`; percent-decode the payload as UTF-8 to recover the exact value in `manifest.json`.
 
 ## Decision requested
 
@@ -792,7 +818,7 @@ In scope: merge coherence, evidence integrity, implementation reproducibility, s
 ## Roles
 
 - Responsible: three isolated reviewers and one adjudicator
-- Accountable: {manifest['decision_owner']}
+- Accountable: {markdown_display_atom(manifest['decision_owner'])}
 - Consulted: repository maintainers and evidence owners as needed
 
 ## Evidence

@@ -10,9 +10,11 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+import signal
 import stat
 import subprocess
 import tempfile
+import time
 from typing import Any, Iterable, Sequence
 
 
@@ -380,6 +382,73 @@ def assess_summary(summary: dict[str, Any], config: dict[str, Any]) -> dict[str,
     if not cluster_coverage_valid:
         reasons.append("missing_or_invalid:analysis_cluster_coverage")
 
+    critical_gate_ids = config["evaluation"].get("critical_gate_ids")
+    critical_gate_coverage = quality.get("critical_gate_coverage")
+    minimum_critical_opportunities = thresholds.get("critical_gate_task_opportunities_min")
+    maximum_critical_upper = thresholds.get("critical_gate_failure_rate_upper95_max")
+    critical_coverage_valid = (
+        isinstance(critical_gate_ids, list)
+        and bool(critical_gate_ids)
+        and len(set(critical_gate_ids)) == len(critical_gate_ids)
+        and all(isinstance(gate, str) and gate for gate in critical_gate_ids)
+        and isinstance(critical_gate_coverage, dict)
+        and set(critical_gate_coverage) == set(critical_gate_ids)
+        and isinstance(minimum_critical_opportunities, int)
+        and not isinstance(minimum_critical_opportunities, bool)
+        and minimum_critical_opportunities >= 1
+        and isinstance(maximum_critical_upper, (int, float))
+        and not isinstance(maximum_critical_upper, bool)
+        and math.isfinite(float(maximum_critical_upper))
+        and 0 < float(maximum_critical_upper) <= 1
+        and task_count is not None
+    )
+    critical_rate_within_bound = True
+    critical_gate_failure_observed = False
+    if critical_coverage_valid:
+        for gate in critical_gate_ids:
+            gate_record = critical_gate_coverage[gate]
+            if not isinstance(gate_record, dict):
+                critical_coverage_valid = False
+                break
+            opportunities = gate_record.get("task_opportunities")
+            failures = gate_record.get("failed_task_opportunities")
+            upper = gate_record.get("failure_rate_upper95")
+            if (
+                not isinstance(opportunities, int)
+                or isinstance(opportunities, bool)
+                or opportunities < minimum_critical_opportunities
+                or opportunities > task_count
+                or not isinstance(failures, int)
+                or isinstance(failures, bool)
+                or failures < 0
+                or failures > opportunities
+                or not isinstance(upper, (int, float))
+                or isinstance(upper, bool)
+                or not math.isfinite(float(upper))
+                or not 0 <= float(upper) <= 1
+            ):
+                critical_coverage_valid = False
+                break
+            expected_upper = 1.0 if failures else 1.0 - math.pow(0.05, 1.0 / opportunities)
+            if not math.isclose(float(upper), expected_upper, rel_tol=1e-12, abs_tol=1e-12):
+                critical_coverage_valid = False
+                break
+            critical_gate_failure_observed = critical_gate_failure_observed or failures > 0
+            critical_rate_within_bound = (
+                critical_rate_within_bound and float(upper) <= float(maximum_critical_upper)
+            )
+    checks["critical_gate_opportunity_coverage"] = True if critical_coverage_valid else None
+    if not critical_coverage_valid:
+        checks["critical_gate_rate_bound"] = None
+        reasons.append("missing_or_invalid:critical_gate_opportunity_coverage")
+    elif critical_rate_within_bound:
+        checks["critical_gate_rate_bound"] = True
+    elif critical_gate_failure_observed:
+        checks["critical_gate_rate_bound"] = False
+    else:
+        checks["critical_gate_rate_bound"] = None
+        reasons.append("missing_or_invalid:critical_gate_failure_rate_bound")
+
     critical = _number(quality.get("critical_candidate_failures"), "critical_candidate_failures", reasons)
     pass_rate = _number(quality.get("other_hard_gate_pass_rate"), "other_hard_gate_pass_rate", reasons)
     c01_b01 = quality.get("c01_minus_b01", {})
@@ -430,6 +499,57 @@ def assess_summary(summary: dict[str, Any], config: dict[str, Any]) -> dict[str,
     return {"classification": classification, "promotable": classification == "promotable", "reasons": sorted(set(reasons)), "checks": checks}
 
 
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _stop_process_group(
+    process: subprocess.Popen[str],
+    *,
+    termination_grace_seconds: float,
+) -> tuple[str, str]:
+    """Terminate and reap an isolated POSIX process group, or fail closed."""
+
+    process_group_id = process.pid
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+    deadline = time.monotonic() + termination_grace_seconds
+    while _process_group_exists(process_group_id) and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    if _process_group_exists(process_group_id):
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    try:
+        stdout, stderr = process.communicate(timeout=max(termination_grace_seconds, 0.1))
+    except subprocess.TimeoutExpired as exc:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        stdout, stderr = process.communicate()
+        raise PipelineError("Timed-out command leader could not be reaped safely") from exc
+
+    reap_deadline = time.monotonic() + max(termination_grace_seconds, 0.1)
+    while _process_group_exists(process_group_id) and time.monotonic() < reap_deadline:
+        time.sleep(0.01)
+    if _process_group_exists(process_group_id):
+        raise PipelineError("Timed-out command process group could not be reaped safely")
+    return stdout, stderr
+
+
 def run_command(
     argv: Sequence[str],
     *,
@@ -439,23 +559,51 @@ def run_command(
     env: dict[str, str] | None = None,
     inherit_env: bool = True,
     check: bool = True,
+    isolate_process_group: bool = False,
+    termination_grace_seconds: float = 0.25,
 ) -> subprocess.CompletedProcess[str]:
     if not argv or any(not isinstance(part, str) or "\x00" in part for part in argv):
         raise PipelineError("Command argv must contain safe strings")
+    if timeout <= 0 or termination_grace_seconds <= 0:
+        raise PipelineError("Command timeouts must be positive")
     merged_env = os.environ.copy() if inherit_env else {}
     if env:
         merged_env.update(env)
-    result = subprocess.run(
-        list(argv),
-        cwd=cwd,
-        input=input_text,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-        env=merged_env,
-        shell=False,
-    )
+    if isolate_process_group:
+        if os.name != "posix":
+            raise PipelineError("Isolated process-group execution requires POSIX")
+        process = subprocess.Popen(
+            list(argv),
+            cwd=cwd,
+            stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=merged_env,
+            shell=False,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = process.communicate(input=input_text, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            stdout, stderr = _stop_process_group(
+                process,
+                termination_grace_seconds=termination_grace_seconds,
+            )
+            raise subprocess.TimeoutExpired(list(argv), timeout, output=stdout, stderr=stderr) from exc
+        result = subprocess.CompletedProcess(list(argv), process.returncode, stdout, stderr)
+    else:
+        result = subprocess.run(
+            list(argv),
+            cwd=cwd,
+            input=input_text,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            env=merged_env,
+            shell=False,
+        )
     if check and result.returncode != 0:
         message = result.stderr.strip() or result.stdout.strip() or f"Command failed with {result.returncode}"
         raise PipelineError(message)

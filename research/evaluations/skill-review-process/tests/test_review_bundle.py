@@ -233,6 +233,107 @@ class ReviewBundleTests(unittest.TestCase):
             self.assertTrue((self.bundle / "assignments" / f"{role}.md").is_file())
         self.assertTrue((self.bundle / "packet-index.json").is_file())
 
+    def test_markdown_packets_encode_untrusted_values_without_structure_escape(self) -> None:
+        malicious_path = (
+            "results\n# PATH_HEADING\r- PATH_LIST\n```PATH_FENCE\n"
+            "| PATH | CELL |\x01.json"
+        )
+        malicious_claim = (
+            "1 test passed\r\n# CLAIM_HEADING\n- CLAIM_LIST\n```CLAIM_FENCE\n"
+            "| CLAIM | CELL |\x02"
+        )
+        malicious_metadata = (
+            "example/repo\n# META_HEADING\r- META_LIST\n```META_FENCE\n"
+            "| META | CELL |\x03"
+        )
+        self._write(malicious_path, '{"failed": 0, "passed": 1}\n')
+        self._git("add", "--", malicious_path)
+        self._git("commit", "-m", "add adversarial artifact name")
+        malicious_head = self._git("rev-parse", "HEAD").strip()
+
+        output = self.root / "malicious-markdown-bundle"
+        args = self._init_args(output, validation=[json.dumps({
+            "claim": malicious_claim,
+            "artifact_path": malicious_path,
+        })])
+        args.head = malicious_head
+        args.repository = malicious_metadata
+        args.review_id = malicious_metadata
+        args.decision_owner = malicious_metadata
+        args.requested_by = malicious_metadata
+        REVIEW.init_bundle(args)
+
+        manifest = json.loads((output / "manifest.json").read_text())
+        self.assertEqual(manifest["review_id"], malicious_metadata)
+        self.assertEqual(manifest["repository"], malicious_metadata)
+        self.assertIn(malicious_path, manifest["changed_files"])
+        self.assertIn(
+            malicious_path, {row["path"] for row in manifest["evidence_index"]}
+        )
+        self.assertEqual(manifest["validation_records"][0]["claim"], malicious_claim)
+        self.assertEqual(
+            manifest["validation_records"][0]["artifact_path"], malicious_path
+        )
+
+        from urllib.parse import unquote_to_bytes
+
+        for original in (malicious_path, malicious_claim, malicious_metadata):
+            atom = REVIEW.markdown_display_atom(original)
+            self.assertTrue(atom.startswith(REVIEW.MARKDOWN_DISPLAY_PREFIX))
+            payload = atom[len(REVIEW.MARKDOWN_DISPLAY_PREFIX):]
+            self.assertEqual(unquote_to_bytes(payload).decode("utf-8"), original)
+
+        baseline_paths = [
+            self.bundle / "context-pack.md",
+            self.bundle / "gate.md",
+            self.bundle / "assignments" / "evidence-methodology.md",
+        ]
+        rendered_paths = [
+            output / "context-pack.md",
+            output / "gate.md",
+            output / "assignments" / "evidence-methodology.md",
+        ]
+
+        def structure_counts(text: str) -> tuple[int, int, int, int]:
+            lines = text.splitlines()
+            return (
+                sum(line.startswith("#") for line in lines),
+                sum(line.startswith("- ") for line in lines),
+                sum(line.startswith("```") for line in lines),
+                sum(line.startswith("|") for line in lines),
+            )
+
+        for baseline_path, rendered_path in zip(baseline_paths, rendered_paths):
+            baseline = baseline_path.read_text()
+            rendered = rendered_path.read_text()
+            baseline_counts = structure_counts(baseline)
+            rendered_counts = structure_counts(rendered)
+            self.assertEqual(rendered_counts[:3], baseline_counts[:3])
+            expected_table_rows = baseline_counts[3] + (
+                1 if rendered_path.name == "context-pack.md" else 0
+            )
+            self.assertEqual(rendered_counts[3], expected_table_rows)
+            self.assertNotIn("\r", rendered)
+            self.assertFalse(any(ord(char) < 32 and char != "\n" for char in rendered))
+            for raw_structure in (
+                "\n# PATH_HEADING", "\n- PATH_LIST", "```PATH_FENCE",
+                "| PATH | CELL |", "\n# CLAIM_HEADING", "\n- CLAIM_LIST",
+                "```CLAIM_FENCE", "| CLAIM | CELL |", "\n# META_HEADING",
+                "\n- META_LIST", "```META_FENCE", "| META | CELL |",
+            ):
+                self.assertNotIn(raw_structure, rendered)
+
+        context = (output / "context-pack.md").read_text()
+        encoded_path = REVIEW.markdown_display_atom(malicious_path)
+        encoded_claim = REVIEW.markdown_display_atom(malicious_claim)
+        self.assertIn(encoded_path, context)
+        self.assertIn(encoded_claim, context)
+        evidence_row = next(
+            line for line in context.splitlines()
+            if line.startswith("|") and encoded_path in line
+        )
+        self.assertEqual(evidence_row.count("|"), 5)
+
     def test_frozen_pr001_schema_1_0_validates_under_legacy_contract(self) -> None:
         result = REVIEW.validate_bundle(argparse.Namespace(
             repo_root=str(REPO_ROOT), bundle=str(FROZEN_PR001), write_summary=False

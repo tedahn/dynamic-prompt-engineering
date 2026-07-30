@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 
@@ -19,6 +20,13 @@ class CandidateContractTest(unittest.TestCase):
         self.assertTrue(result["ok"], result["errors"])
         self.assertEqual(result["fixture_count"], 8)
         self.assertIn("automation_e2e_regression", result["hashes"])
+
+    def test_candidate_contract_rejects_weaker_critical_gate_bound(self) -> None:
+        config_path = REPO_ROOT / "research/evaluations/explore-approaches/config/pipeline-v1.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["evaluation"]["thresholds"]["critical_gate_failure_rate_upper95_max"] = 0.66
+        errors = CHECKER.validate_critical_gate_thresholds(config["evaluation"])
+        self.assertTrue(any("no greater than 0.65" in error for error in errors))
 
     def test_duplicate_fixture_ids_fail(self) -> None:
         row = {

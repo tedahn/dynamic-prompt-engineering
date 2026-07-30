@@ -7,6 +7,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -153,6 +154,27 @@ def validate_csv_ledger(path: Path) -> list[str]:
     duplicates = sorted({value for value in identifiers if identifiers.count(value) > 1})
     if duplicates:
         errors.append(f"duplicate ledger IDs in {path}: {duplicates}")
+    return errors
+
+
+def validate_critical_gate_thresholds(evaluation: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    thresholds = evaluation.get("thresholds", {})
+    minimum_critical_opportunities = thresholds.get("critical_gate_task_opportunities_min")
+    if (
+        not isinstance(minimum_critical_opportunities, int)
+        or isinstance(minimum_critical_opportunities, bool)
+        or minimum_critical_opportunities < 3
+    ):
+        errors.append("pipeline config does not require at least three independent task opportunities per critical gate")
+    maximum_critical_upper = thresholds.get("critical_gate_failure_rate_upper95_max")
+    if (
+        not isinstance(maximum_critical_upper, (int, float))
+        or isinstance(maximum_critical_upper, bool)
+        or not math.isfinite(float(maximum_critical_upper))
+        or not 0 < float(maximum_critical_upper) <= 0.65
+    ):
+        errors.append("pipeline config omits a valid critical-gate failure-rate upper bound no greater than 0.65")
     return errors
 
 
@@ -485,10 +507,11 @@ def validate(repo_root: Path) -> dict[str, Any]:
             errors.append(f"pipeline config omits bounded provider execution limit: {key}")
     if not REQUIRED_CONTENT_SAFETY_GATES.issubset(set(evaluation.get("critical_gate_ids", []))):
         errors.append("pipeline config does not classify both content-safety gates as critical")
+    errors.extend(validate_critical_gate_thresholds(evaluation))
     if not {"security", "privacy"}.issubset(set(evaluation.get("required_holdout_domains", []))):
         errors.append("pipeline config does not require security and privacy holdout coverage")
     expected_analysis_plan = {
-        "version": "1.0",
+        "version": "1.1",
         "trial_aggregation": "arithmetic_mean_within_task_arm",
         "task_weighting": "equal",
         "missing_handling": "no_imputation_inconclusive",
@@ -496,6 +519,8 @@ def validate(repo_root: Path) -> dict[str, Any]:
         "adjudication": "one_named_human_final_packet_per_task_trial",
         "quality_interval": "task_cluster_percentile_bootstrap_mean",
         "resource_interval": "task_cluster_percentile_bootstrap_median",
+        "critical_opportunity_unit": "task_cluster",
+        "critical_zero_failure_bound": "exact_one_sided_binomial_95",
         "confidence_level": 0.95,
     }
     if evaluation.get("analysis_plan") != expected_analysis_plan:

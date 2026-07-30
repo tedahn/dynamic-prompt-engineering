@@ -635,6 +635,60 @@ def _plan_design(rows: Sequence[dict[str, Any]], evaluation: dict[str, Any]) -> 
     trials_per_task = int(evaluation["trials_per_task"])
     if trials_per_task < 1:
         raise PipelineError("Evaluation trials_per_task must be positive")
+    critical_gate_ids = evaluation.get("critical_gate_ids", DEFAULT_CRITICAL_GATES)
+    if (
+        not isinstance(critical_gate_ids, (list, tuple))
+        or not critical_gate_ids
+        or len(set(critical_gate_ids)) != len(critical_gate_ids)
+        or any(not isinstance(gate, str) or not gate for gate in critical_gate_ids)
+    ):
+        raise PipelineError("Evaluation critical_gate_ids must be unique non-empty strings")
+    critical_gate_ids = list(critical_gate_ids)
+    critical_gate_task_opportunities = {
+        gate: sorted(str(task["task_id"]) for task in rows if gate in task["hard_gates"])
+        for gate in critical_gate_ids
+    }
+    minimum_opportunities = evaluation.get("thresholds", {}).get(
+        "critical_gate_task_opportunities_min"
+    )
+    if (
+        not isinstance(minimum_opportunities, int)
+        or isinstance(minimum_opportunities, bool)
+        or minimum_opportunities < 1
+    ):
+        raise PipelineError("Critical-gate task-opportunity threshold is missing or invalid")
+    maximum_upper = evaluation.get("thresholds", {}).get(
+        "critical_gate_failure_rate_upper95_max"
+    )
+    if (
+        not isinstance(maximum_upper, (int, float))
+        or isinstance(maximum_upper, bool)
+        or not math.isfinite(float(maximum_upper))
+        or not 0 < float(maximum_upper) <= 1
+    ):
+        raise PipelineError("Critical-gate zero-failure upper-bound threshold is missing or invalid")
+    insufficient = {
+        gate: len(task_ids)
+        for gate, task_ids in critical_gate_task_opportunities.items()
+        if len(task_ids) < minimum_opportunities
+    }
+    if insufficient:
+        raise PipelineError(
+            f"Holdout lacks independent task opportunities for critical gates: {insufficient}"
+        )
+    infeasible = {
+        gate: {
+            "task_opportunities": len(task_ids),
+            "best_zero_failure_upper95": 1.0 - math.pow(0.05, 1.0 / len(task_ids)),
+        }
+        for gate, task_ids in critical_gate_task_opportunities.items()
+        if 1.0 - math.pow(0.05, 1.0 / len(task_ids)) > float(maximum_upper)
+    }
+    if infeasible:
+        raise PipelineError(
+            "Holdout cannot satisfy the frozen critical-gate zero-failure bound: "
+            f"{infeasible}"
+        )
     cells: list[dict[str, Any]] = []
     for task in rows:
         for trial in range(1, trials_per_task + 1):
@@ -654,6 +708,7 @@ def _plan_design(rows: Sequence[dict[str, Any]], evaluation: dict[str, Any]) -> 
     body = {
         "schema_version": "1.0",
         "task_domains": [{"task_id": row["task_id"], "domain": row["domain"]} for row in rows],
+        "critical_gate_task_opportunities": critical_gate_task_opportunities,
         "trials_per_task": trials_per_task,
         "arms": list(arms),
         "plan_seed": plan_seed,
@@ -1054,6 +1109,9 @@ def freeze_plan(
         "lifecycle_executables_sha256": lifecycle_executables["sha256"],
         "plan_design_sha256": plan_design["sha256"],
         "blind_key_commitment": holdout_manifest["blind_key_commitment"],
+        "critical_gate_task_opportunities": plan_design[
+            "critical_gate_task_opportunities"
+        ],
         "trials_per_task": int(evaluation["trials_per_task"]),
         "arms": list(arms),
         "cells": cells,
@@ -1194,6 +1252,9 @@ def _verified_plan(run_dir: Path, config: dict[str, Any]) -> tuple[dict[str, Any
         "lifecycle_executables_sha256": lifecycle_executables["sha256"],
         "plan_design_sha256": plan_design["sha256"],
         "blind_key_commitment": blind_key_commitment,
+        "critical_gate_task_opportunities": plan_design[
+            "critical_gate_task_opportunities"
+        ],
         "trials_per_task": plan_design["trials_per_task"],
         "arms": plan_design["arms"],
         "cells": plan_design["cells"],
@@ -1475,6 +1536,7 @@ def invoke_adapter(
                 check=False,
                 env={key: os.environ[key] for key in env_allowlist if key in os.environ},
                 inherit_env=False,
+                isolate_process_group=True,
             )
         except subprocess.TimeoutExpired as exc:
             completed = subprocess.CompletedProcess(argv, 124, exc.stdout or "", exc.stderr or "adapter timed out")
@@ -2565,6 +2627,10 @@ def build_summary(
     task_arm_scores: dict[tuple[str, str], list[float]] = defaultdict(list)
     domain_arm_scores: dict[tuple[str, str], list[float]] = defaultdict(list)
     critical_failures = 0
+    critical_gate_task_opportunities = plan["critical_gate_task_opportunities"]
+    critical_gate_task_failures: dict[str, set[str]] = {
+        gate: set() for gate in critical_gate_task_opportunities
+    }
     other_gate_trials = other_gate_passes = 0
     for cell in plan["cells"]:
         grade = grade_by_cell.get(cell["cell_id"])
@@ -2577,6 +2643,9 @@ def build_summary(
                 critical_failures += 1
             gates = grade.get("hard_gates")
             if isinstance(gates, dict):
+                for gate, task_ids in critical_gate_task_opportunities.items():
+                    if cell["task_id"] in task_ids and gates.get(gate) is False:
+                        critical_gate_task_failures[gate].add(cell["task_id"])
                 noncritical = [passed for name, passed in gates.items() if name not in critical_gates]
                 other_gate_trials += 1
                 other_gate_passes += int(bool(noncritical) and all(noncritical))
@@ -2634,6 +2703,18 @@ def build_summary(
     )
     quality = {
         "critical_candidate_failures": critical_failures,
+        "critical_gate_coverage": {
+            gate: {
+                "task_opportunities": len(task_ids),
+                "failed_task_opportunities": len(critical_gate_task_failures[gate]),
+                "failure_rate_upper95": (
+                    1.0
+                    if critical_gate_task_failures[gate]
+                    else 1.0 - math.pow(0.05, 1.0 / len(task_ids))
+                ),
+            }
+            for gate, task_ids in critical_gate_task_opportunities.items()
+        },
         "other_hard_gate_pass_rate": other_gate_passes / other_gate_trials if other_gate_trials else None,
         "c01_minus_b01": _interval_or_empty(task_diff_b01, seed=seed, samples=samples),
         "c01_minus_b02": _interval_or_empty(task_diff_b02, seed=seed + 1, samples=samples),

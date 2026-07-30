@@ -257,7 +257,7 @@ def _freeze(
             holdout_manifest,
             config,
             manifest,
-            base_commit=_git_head(),
+            base_commit=_git_head(REPO_ROOT),
         )
     verify_frozen_holdout_signature(run_dir, config)
     if lifecycle.current["state"] == "draft":
@@ -281,21 +281,40 @@ def _freeze(
     return plan
 
 
-def _git_head() -> str:
+def _git_head(repo_root: Path) -> str:
     import subprocess
 
+    trusted_root = repo_root.resolve(strict=True)
+    git_env = {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "LANG": "C",
+        "LANGUAGE": "C",
+        "LC_ALL": "C",
+        "GIT_ASKPASS": os.devnull,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "Never",
+    }
     completed = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=REPO_ROOT,
+        ["git", "--no-replace-objects", "-C", str(trusted_root), "rev-parse", "--verify", "HEAD^{commit}"],
+        cwd=trusted_root,
+        env=git_env,
+        stdin=subprocess.DEVNULL,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        timeout=10.0,
         check=False,
         shell=False,
     )
     if completed.returncode != 0:
         raise PipelineError(f"Cannot resolve repository HEAD: {completed.stderr.strip()}")
-    return completed.stdout.strip()
+    head = completed.stdout.strip()
+    if len(head) not in {40, 64} or any(character not in "0123456789abcdef" for character in head):
+        raise PipelineError("Cannot resolve repository HEAD: Git returned an invalid object identity")
+    return head
 
 
 def _run_subject_stage(

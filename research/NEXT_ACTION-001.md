@@ -1,6 +1,6 @@
 # Next action 001 — establish the reference-skill baseline
 
-- **Status:** repaired pilot frozen and replacement plan ready; three replacement preflight cells require named-human budget approval
+- **Status:** repaired pilot frozen; three replacement preflight cells and all scored cells remain separately unauthorized
 - **Owner:** Ted Ahn (current workspace owner)
 - **Proposed deadline:** 2026-08-04
 - **Decision unlocked:** whether `professionalize-prompt` is a suitable reference architecture and which of its components deserve separate technique research
@@ -34,11 +34,11 @@ Check for prompt bloat, grading bias toward verbosity, evaluation leakage, unsup
 ## Proposed budget and stop rule
 
 - Human time: up to 4 hours for fixture review, grading review, and decision synthesis.
-- Model runs: proposed ceiling of 48, subject to owner approval and current cost controls.
+- Model runs: the historical 48-cell ceiling is invalidated by artifact drift. The current replacement request covers exactly three discarded preflight cells and zero scored cells; any scored run needs a new target-bound approval.
 - Stop early if a condition causes a critical safety/authority regression, the target surface changes, graders cannot distinguish the intended behavior, or remaining runs cannot change the decision.
 
 ## Approval state
 
-Ted Ahn is the named pilot owner and approver. The synthetic-data boundary, isolated execution policy, bundled Codex CLI target, and 48-cell execution ceiling are approved in `EXP-PP-V2-PILOT`. This development pilot cannot authorize adoption; a separate fresh held-out study and adoption approver remain required after pilot review.
+Ted Ahn is the named pilot owner and approver. `EXP-PP-V2-PILOT` preserves the prior synthetic-data boundary, isolated execution policy, bundled Codex CLI target, and 48-cell ceiling only as historical evidence. Artifact drift invalidated that authorization for both replacement preflight and all 45 scored cells. This development pilot cannot authorize adoption; a separate fresh held-out study and adoption approver remain required after pilot review.
 
-The first three discarded preflight cells completed but exposed shared-runtime-home contamination before any scored cell ran. The repaired runner and replacement plan validate locally. `pilot-v2/approvals/REPLACEMENT-PREFLIGHT-001.md` requests authority for exactly three additional discarded cells; do not resume provider execution until that approval is recorded.
+The first three discarded preflight cells completed but exposed shared-runtime-home contamination before any scored cell ran. The repaired runner and replacement plan validate locally. `pilot-v2/approvals/REPLACEMENT-PREFLIGHT-001.md` requests authority for exactly three additional discarded cells and explicitly authorizes zero scored cells. A successful replacement preflight does not unlock scoring. Before any of the 45 scored cells run, create a new frozen experiment or authorization record that binds the repaired artifact hashes, explicit scored-cell and token budgets, expiry, and named-human approval; the runner must remain fail-closed until that separate record exists.

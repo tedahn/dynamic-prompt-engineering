@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from automation.core import PipelineError, assess_summary, atomic_write_json, build_candidate_manifest, canonical_json_bytes, load_json, sha256_file, sha256_json
-from automation.evaluation import _blind_cell_binding, _blind_hmac, _computed_grade_score, build_blind_bundle, build_holdout_manifest_template, build_summary, freeze_plan, holdout_manifest_payload, invoke_adapter, read_jsonl, run_provisional_grading, run_subjects, verify_evidence_manifest, write_jsonl
+from automation.evaluation import _blind_cell_binding, _blind_hmac, _computed_grade_score, _plan_design, build_blind_bundle, build_holdout_manifest_template, build_summary, freeze_plan, holdout_manifest_payload, invoke_adapter, read_jsonl, run_provisional_grading, run_subjects, verify_evidence_manifest, write_jsonl
 
 
 FAKE_ADAPTER = r'''from __future__ import annotations
@@ -34,6 +34,24 @@ json.dump(response, open(sys.argv[2],"w",encoding="utf-8"))
 
 
 class EvaluationAutomationTest(unittest.TestCase):
+    def test_plan_rejects_holdout_that_cannot_meet_frozen_critical_bound(self) -> None:
+        rows = [
+            {"task_id": f"H-{index}", "domain": "security", "hard_gates": ["critical"]}
+            for index in range(3)
+        ]
+        evaluation = {
+            "arms": ["B00_RAW", "B01_MIN_ADVICE", "B02_PROFESSIONALIZE", "C01_EXPLORE"],
+            "trials_per_task": 1,
+            "critical_gate_ids": ["critical"],
+            "thresholds": {
+                "critical_gate_task_opportunities_min": 3,
+                "critical_gate_failure_rate_upper95_max": 0.1,
+            },
+            "plan_seed": 1,
+        }
+        with self.assertRaisesRegex(PipelineError, "cannot satisfy the frozen critical-gate"):
+            _plan_design(rows, evaluation)
+
     def test_dimension_map_is_exact_and_supplied_aggregate_cannot_disagree(self) -> None:
         weights = {"grounding": 1.0, "reversibility": 2.0}
         with self.assertRaisesRegex(PipelineError, "exact rubric dimension map"):
@@ -64,6 +82,54 @@ class EvaluationAutomationTest(unittest.TestCase):
             )
             self.assertEqual(result["status"], "completed")
             self.assertEqual([attempt["status"] for attempt in result["attempts"]], ["transient_error", "completed"])
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "fork"), "requires POSIX process groups")
+    def test_timed_out_adapter_reaps_descendant_group_before_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            adapter = root / "forking-adapter.py"
+            ready_marker = root / "child-ready"
+            terminated_marker = root / "child-terminated"
+            survivor_marker = root / "child-survived"
+            adapter.write_text(
+                "import hashlib,json,os,signal,sys,time\n"
+                "b=open(sys.argv[1],'rb').read();r=json.loads(b)\n"
+                "if r['attempt']==1:\n"
+                " child=os.fork()\n"
+                " if child==0:\n"
+                "  def on_term(signum,frame):\n"
+                "   open(r['terminated_marker'],'w').write('terminated')\n"
+                "   time.sleep(5)\n"
+                "   open(r['survivor_marker'],'w').write('survived')\n"
+                "  signal.signal(signal.SIGTERM,on_term)\n"
+                "  open(r['ready_marker'],'w').write('ready')\n"
+                "  time.sleep(30)\n"
+                "  os._exit(0)\n"
+                " while not os.path.exists(r['ready_marker']): time.sleep(0.005)\n"
+                " time.sleep(30)\n"
+                "binding={'request_id':r['request_id'],'request_sha256':hashlib.sha256(b).hexdigest()}\n"
+                "o={'schema_version':'1.0',**binding,'status':'completed','output':{'text':'ok'},'telemetry':{'latency_ms':1,'input_tokens':1,'output_tokens':1}}\n"
+                "json.dump(o,open(sys.argv[2],'w'))\n",
+                encoding="utf-8",
+            )
+            result = invoke_adapter(
+                [sys.executable, str(adapter), "{input}", "{output}"],
+                {
+                    "schema_version": "1.0",
+                    "adapter_kind": "subject",
+                    "ready_marker": str(ready_marker),
+                    "terminated_marker": str(terminated_marker),
+                    "survivor_marker": str(survivor_marker),
+                },
+                root / "attempts",
+                timeout_seconds=0.2,
+                max_transient_retries=1,
+            )
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual([attempt["status"] for attempt in result["attempts"]], ["transient_error", "completed"])
+            self.assertTrue(ready_marker.is_file())
+            self.assertTrue(terminated_marker.is_file())
+            self.assertFalse(survivor_marker.exists())
 
     def test_subject_runner_stops_after_first_permanent_adapter_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -228,6 +294,8 @@ class EvaluationAutomationTest(unittest.TestCase):
                     "max_transient_retries": 2,
                     "thresholds": {
                         "critical_candidate_failures_max": 0,
+                        "critical_gate_task_opportunities_min": 3,
+                        "critical_gate_failure_rate_upper95_max": 0.65,
                         "other_hard_gate_pass_rate_min": 0.95,
                         "c01_minus_b01_mean_min": 0.4,
                         "c01_minus_b02_mean_min": -0.1,
@@ -551,6 +619,7 @@ class EvaluationAutomationTest(unittest.TestCase):
             mappings_by_packet = {}
             for mapping in read_jsonl(run / "private/grading/blind-map.jsonl"):
                 mappings_by_packet.setdefault(mapping["packet_id"], []).append(mapping)
+            failing_packet_id = min(mappings_by_packet)
             for packet_id, mappings in mappings_by_packet.items():
                 by_arm = {mapping["arm"]: mapping for mapping in mappings}
                 grades.append(
@@ -566,8 +635,17 @@ class EvaluationAutomationTest(unittest.TestCase):
                                     identifier: {"B00_RAW": 2, "B01_MIN_ADVICE": 3, "B02_PROFESSIONALIZE": 3, "C01_EXPLORE": 4}[mapping["arm"]]
                                     for identifier in dimension_ids
                                 },
-                                "critical_failure": False,
-                                "hard_gates": {gate: True for gate in hard_gates},
+                                "critical_failure": (
+                                    packet_id == failing_packet_id and mapping["arm"] == "C01_EXPLORE"
+                                ),
+                                "hard_gates": {
+                                    gate: not (
+                                        packet_id == failing_packet_id
+                                        and mapping["arm"] == "C01_EXPLORE"
+                                        and gate == hard_gates[0]
+                                    )
+                                    for gate in hard_gates
+                                },
                                 "rationale": "Synthetic deterministic mechanics grade",
                             }
                             for mapping in mappings
@@ -654,6 +732,15 @@ class EvaluationAutomationTest(unittest.TestCase):
             self.assertEqual(summary["evidence"]["blind_map_sha256"], sha256_file(map_path))
             self.assertEqual(summary["evidence"]["blind_map_path"], "private/grading/blind-map.jsonl")
             self.assertEqual(summary["evidence"]["evidence_manifest_sha256"], sha256_file(run / "evidence-manifest.json"))
+            self.assertEqual(set(summary["quality"]["critical_gate_coverage"]), set(hard_gates[:4]))
+            for gate, record in summary["quality"]["critical_gate_coverage"].items():
+                self.assertEqual(record["task_opportunities"], 12)
+                if gate == hard_gates[0]:
+                    self.assertEqual(record["failed_task_opportunities"], 1)
+                    self.assertEqual(record["failure_rate_upper95"], 1.0)
+                else:
+                    self.assertEqual(record["failed_task_opportunities"], 0)
+                    self.assertLessEqual(record["failure_rate_upper95"], 0.65)
             self.assertEqual(verify_evidence_manifest(run, config), evidence_manifest)
 
             raw_relative = evidence_manifest["cells"][0]["attempts"][0]["raw_response"]["path"]
@@ -689,7 +776,7 @@ class EvaluationAutomationTest(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "duplicate artifact paths"):
                 verify_evidence_manifest(run, config)
             evidence_path.write_bytes(evidence_bytes)
-            self.assertEqual(assess_summary(summary, config)["classification"], "promotable")
+            self.assertEqual(assess_summary(summary, config)["classification"], "rejected")
 
 
 if __name__ == "__main__":
