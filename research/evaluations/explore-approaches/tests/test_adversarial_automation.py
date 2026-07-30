@@ -268,9 +268,14 @@ class AdversarialAutomationTest(unittest.TestCase):
         executable = str(Path(sys.executable).resolve())
         for argv in (
             [executable, "-m", "validator", "{skill}"],
+            [executable, "-mvalidator", "{skill}"],
             [executable, "-c", "print('pass')", "{skill}"],
+            [executable, "-cprint('pass')", "{skill}"],
+            [executable, "-eprint('pass')", "{skill}"],
+            [executable, "-p1+1", "{skill}"],
             [executable, "--eval", "pass", "{skill}"],
             [executable, "--eval=pass", "{skill}"],
+            [executable, "-encodedcommandAAAA", "{skill}"],
             [executable, "-encodedcommand:AAAA", "{skill}"],
         ):
             with self.subTest(argv=argv):

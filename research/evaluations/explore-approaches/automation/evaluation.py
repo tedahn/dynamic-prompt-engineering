@@ -289,15 +289,23 @@ def _command_binding(
         "-encodedcommand",
         "--encoded-command",
     }
+    forbidden_attached_interpreter_flags = {"-m", "-c", "-e", "-p", "-command", "-enc", "-encodedcommand"}
     artifacts: dict[str, dict[str, Any]] = {executable["path"]: executable}
     command_artifact_paths = {executable["path"]}
     resolved_argv = [executable["path"]]
     seen_placeholders: list[str] = []
     for index, value in enumerate(template[1:], 1):
         folded = value.casefold()
-        if folded in forbidden_interpreter_flags or any(
-            folded.startswith(f"{flag}=") or folded.startswith(f"{flag}:")
-            for flag in forbidden_interpreter_flags
+        if (
+            folded in forbidden_interpreter_flags
+            or any(
+                folded.startswith(f"{flag}=") or folded.startswith(f"{flag}:")
+                for flag in forbidden_interpreter_flags
+            )
+            or any(
+                folded.startswith(flag) and len(folded) > len(flag)
+                for flag in forbidden_attached_interpreter_flags
+            )
         ):
             raise PipelineError(
                 f"{label} module, inline, eval, or encoded interpreter execution is forbidden"
