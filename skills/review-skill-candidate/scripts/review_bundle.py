@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +31,11 @@ ALLOWED_FINDING_STATUSES = {
 }
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 ASSET_ROOT = SKILL_ROOT / "assets"
+SUPPORTED_SCHEMA_KEYWORDS = {
+    "$defs", "$id", "$ref", "$schema", "additionalProperties", "const",
+    "enum", "items", "minimum", "minItems", "minLength", "pattern",
+    "properties", "required", "title", "type", "uniqueItems",
+}
 
 
 class ReviewError(RuntimeError):
@@ -63,6 +70,38 @@ def load_json(path: Path) -> Any:
         raise ReviewError(f"Cannot load JSON {path}: {exc}") from exc
 
 
+def sanitized_git_diagnostic(repo: Path, value: bytes | str, limit: int = 300) -> str:
+    text = value.decode("utf-8", "replace") if isinstance(value, bytes) else str(value)
+    text = text.replace(str(repo), "<repo>")
+    text = " ".join(
+        "".join(character if character.isprintable() else " " for character in text).split()
+    )
+    return (text[:limit].rstrip() + "...") if len(text) > limit else (text or "no diagnostic")
+
+
+def run_git_bytes(
+    repo: Path,
+    operation: str,
+    *args: str,
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            check=False,
+            capture_output=True,
+        )
+    except OSError as exc:
+        diagnostic = sanitized_git_diagnostic(repo, str(exc))
+        raise ReviewError(f"git {operation} could not start: {diagnostic}") from exc
+    if result.returncode != 0:
+        diagnostic = sanitized_git_diagnostic(repo, result.stderr)
+        raise ReviewError(
+            f"git {operation} failed with exit {result.returncode}: {diagnostic}"
+        )
+    return result
+
+
 def git(repo: Path, *args: str, binary: bool = False) -> bytes | str:
     result = subprocess.run(
         ["git", *args],
@@ -89,13 +128,214 @@ def ensure_relative(path_text: str) -> str:
 
 
 def blob_at(repo: Path, commit: str, relative: str) -> bytes | None:
-    result = subprocess.run(
-        ["git", "show", f"{commit}:{relative}"],
-        cwd=repo,
-        check=False,
-        capture_output=True,
+    relative = ensure_relative(relative)
+    probe = run_git_bytes(
+        repo,
+        "ls-tree probe",
+        "--literal-pathspecs",
+        "ls-tree",
+        "-z",
+        "--full-tree",
+        commit,
+        "--",
+        relative,
     )
-    return result.stdout if result.returncode == 0 else None
+    entries = [entry for entry in probe.stdout.split(b"\0") if entry]
+    if not entries:
+        return None
+    if len(entries) != 1 or b"\t" not in entries[0]:
+        raise ReviewError("git ls-tree probe returned an ambiguous result")
+    metadata, listed_path = entries[0].split(b"\t", 1)
+    fields = metadata.split(b" ")
+    if len(fields) != 3 or listed_path != os.fsencode(relative):
+        raise ReviewError("git ls-tree probe returned a malformed result")
+    _mode, object_type, object_id = fields
+    if object_type != b"blob" or not re.fullmatch(rb"[0-9a-f]{40,64}", object_id):
+        kind = sanitized_git_diagnostic(repo, object_type, limit=30)
+        raise ReviewError(f"git ls-tree probe resolved a non-blob object: {kind}")
+    result = run_git_bytes(
+        repo,
+        "cat-file blob read",
+        "cat-file",
+        "blob",
+        object_id.decode("ascii"),
+    )
+    return result.stdout
+
+
+def json_fingerprint(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def schema_type_matches(value: Any, expected: str) -> bool:
+    checks = {
+        "array": isinstance(value, list),
+        "boolean": isinstance(value, bool),
+        "integer": isinstance(value, int) and not isinstance(value, bool),
+        "null": value is None,
+        "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+        "object": isinstance(value, dict),
+        "string": isinstance(value, str),
+    }
+    if expected not in checks:
+        raise ReviewError(f"Unsupported JSON Schema type: {expected}")
+    return checks[expected]
+
+
+def assert_supported_schema(schema: Any, schema_path: str = "#") -> None:
+    if not isinstance(schema, dict):
+        raise ReviewError(f"Unsupported JSON Schema node at {schema_path}")
+    unsupported = sorted(set(schema) - SUPPORTED_SCHEMA_KEYWORDS)
+    if unsupported:
+        raise ReviewError(
+            f"Unsupported JSON Schema keyword at {schema_path}: {', '.join(unsupported)}"
+        )
+    for container in ("properties", "$defs"):
+        children = schema.get(container, {})
+        if not isinstance(children, dict):
+            raise ReviewError(f"Invalid JSON Schema {container} at {schema_path}")
+        for key, child in children.items():
+            assert_supported_schema(child, f"{schema_path}/{container}/{key}")
+    if "items" in schema:
+        assert_supported_schema(schema["items"], f"{schema_path}/items")
+    additional = schema.get("additionalProperties", True)
+    if not isinstance(additional, bool):
+        assert_supported_schema(additional, f"{schema_path}/additionalProperties")
+
+
+def resolve_schema_ref(root_schema: dict[str, Any], reference: Any) -> dict[str, Any]:
+    if not isinstance(reference, str) or not reference.startswith("#/"):
+        raise ReviewError(f"Unsupported non-local JSON Schema reference: {reference!r}")
+    current: Any = root_schema
+    for raw_token in reference[2:].split("/"):
+        token = raw_token.replace("~1", "/").replace("~0", "~")
+        if not isinstance(current, dict) or token not in current:
+            raise ReviewError(f"Unresolvable JSON Schema reference: {reference}")
+        current = current[token]
+    if not isinstance(current, dict):
+        raise ReviewError(f"JSON Schema reference is not an object: {reference}")
+    return current
+
+
+def instance_path(parent: str, key: str) -> str:
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key):
+        return f"{parent}.{key}"
+    return f"{parent}[{json.dumps(key, ensure_ascii=False)}]"
+
+
+def validate_schema_node(
+    value: Any,
+    schema: dict[str, Any],
+    root_schema: dict[str, Any],
+    path: str,
+    errors: list[str],
+) -> None:
+    if "$ref" in schema:
+        validate_schema_node(
+            value,
+            resolve_schema_ref(root_schema, schema["$ref"]),
+            root_schema,
+            path,
+            errors,
+        )
+    if "const" in schema and json_fingerprint(value) != json_fingerprint(schema["const"]):
+        errors.append(f"{path}: must equal {schema['const']!r}")
+    if "enum" in schema:
+        allowed = {json_fingerprint(item) for item in schema["enum"]}
+        if json_fingerprint(value) not in allowed:
+            errors.append(f"{path}: value is not in the allowed enum")
+
+    expected_type = schema.get("type")
+    if expected_type is not None:
+        type_names = expected_type if isinstance(expected_type, list) else [expected_type]
+        if not type_names or not all(isinstance(item, str) for item in type_names):
+            raise ReviewError(f"Invalid JSON Schema type at {path}")
+        if not any(schema_type_matches(value, item) for item in type_names):
+            errors.append(f"{path}: expected type {' or '.join(type_names)}")
+            return
+
+    if isinstance(value, dict):
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+            raise ReviewError(f"Invalid JSON Schema required list at {path}")
+        for key in required:
+            if key not in value:
+                errors.append(f"{path}: missing required property {key!r}")
+        for key, child_value in value.items():
+            if key in properties:
+                validate_schema_node(
+                    child_value,
+                    properties[key],
+                    root_schema,
+                    instance_path(path, key),
+                    errors,
+                )
+            else:
+                additional = schema.get("additionalProperties", True)
+                if additional is False:
+                    errors.append(f"{path}: additional property {key!r} is not allowed")
+                elif isinstance(additional, dict):
+                    validate_schema_node(
+                        child_value,
+                        additional,
+                        root_schema,
+                        instance_path(path, key),
+                        errors,
+                    )
+
+    if isinstance(value, list):
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            errors.append(f"{path}: requires at least {schema['minItems']} item(s)")
+        if schema.get("uniqueItems") is True:
+            seen: dict[str, int] = {}
+            for index, item in enumerate(value):
+                fingerprint = json_fingerprint(item)
+                if fingerprint in seen:
+                    errors.append(
+                        f"{path}: items at indexes {seen[fingerprint]} and {index} are not unique"
+                    )
+                else:
+                    seen[fingerprint] = index
+        if "items" in schema:
+            for index, item in enumerate(value):
+                validate_schema_node(
+                    item,
+                    schema["items"],
+                    root_schema,
+                    f"{path}[{index}]",
+                    errors,
+                )
+
+    if isinstance(value, str):
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            errors.append(f"{path}: length must be at least {schema['minLength']}")
+        if "pattern" in schema:
+            try:
+                matches = re.search(schema["pattern"], value)
+            except (TypeError, re.error) as exc:
+                raise ReviewError(f"Invalid JSON Schema pattern at {path}: {exc}") from exc
+            if matches is None:
+                errors.append(f"{path}: does not match required pattern {schema['pattern']!r}")
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            errors.append(f"{path}: must be at least {schema['minimum']}")
+
+
+def validate_json_schema(value: Any, schema: Any) -> list[str]:
+    assert_supported_schema(schema)
+    assert isinstance(schema, dict)
+    errors: list[str] = []
+    validate_schema_node(value, schema, schema, "$", errors)
+    return errors
+
+
+def review_submission_schema() -> dict[str, Any]:
+    schema = load_json(ASSET_ROOT / "schemas" / "review-submission.schema.json")
+    if not isinstance(schema, dict):
+        raise ReviewError("Review submission schema is not an object")
+    return schema
 
 
 def file_record(repo: Path, base_sha: str, head_sha: str, relative: str) -> dict[str, Any]:
@@ -452,9 +692,11 @@ def validate_submission(
         errors.append(f"missing reviewer submission: {role}")
         return None, []
     value = load_json(path)
-    if not isinstance(value, dict):
-        errors.append(f"submission is not an object: {role}")
+    schema_errors = validate_json_schema(value, review_submission_schema())
+    if schema_errors:
+        errors.extend(f"{role} submission schema {item}" for item in schema_errors)
         return None, []
+    assert isinstance(value, dict)
     target = manifest["target"]
     if value.get("schema_version") != SCHEMA_VERSION:
         errors.append(f"{role} schema_version mismatch")

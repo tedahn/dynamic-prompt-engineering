@@ -45,20 +45,28 @@
       "required": [
         "evaluation_summary_sha256",
         "evidence_manifest_sha256",
+        "blind_key_commitment",
+        "blind_map_path",
+        "blind_map_sha256",
         "holdout_manifest_sha256",
         "protocol_sha256",
         "rubric_sha256",
         "rollback_evidence_sha256",
-        "config_sha256"
+        "config_sha256",
+        "lifecycle_executables_sha256"
       ],
       "properties": {
         "evaluation_summary_sha256": {"pattern": "^[0-9a-f]{64}$"},
         "evidence_manifest_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "blind_key_commitment": {"pattern": "^[0-9a-f]{64}$"},
+        "blind_map_path": {"const": "private/grading/blind-map.jsonl"},
+        "blind_map_sha256": {"pattern": "^[0-9a-f]{64}$"},
         "holdout_manifest_sha256": {"pattern": "^[0-9a-f]{64}$"},
         "protocol_sha256": {"pattern": "^[0-9a-f]{64}$"},
         "rubric_sha256": {"pattern": "^[0-9a-f]{64}$"},
         "rollback_evidence_sha256": {"pattern": "^[0-9a-f]{64}$"},
-        "config_sha256": {"pattern": "^[0-9a-f]{64}$"}
+        "config_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "lifecycle_executables_sha256": {"pattern": "^[0-9a-f]{64}$"}
       }
     },
     "target": {

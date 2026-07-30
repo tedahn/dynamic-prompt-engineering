@@ -762,43 +762,43 @@ window.PROMPT_RESEARCH_DATA = {
   ],
   "ledgers": {
     "claims": {
-      "count": 55,
+      "count": 56,
       "status": {
         "Grounded fact": 32,
         "Looks believable": 4,
         "Corroborated": 10,
         "Forecast/opinion": 2,
-        "Experimental": 7
+        "Experimental": 8
       },
       "confidence": {
-        "high": 35,
+        "high": 36,
         "medium": 18,
         "low": 2
       }
     },
     "sources": {
-      "count": 67,
+      "count": 68,
       "type": {
         "official documentation": 11,
         "official help": 2,
         "official engineering article": 4,
         "direct artifact": 6,
         "research paper": 36,
-        "direct observation": 4,
+        "direct observation": 5,
         "research preprint": 2,
         "vendor technical report": 1,
         "direct technical report": 1
       }
     },
     "evalCases": {
-      "count": 27,
+      "count": 28,
       "status": {
         "blocked": 1,
         "designed": 14,
         "deferred": 1,
         "mechanically-validated": 5,
         "development-diagnostic": 2,
-        "remediation-validated": 4
+        "remediation-validated": 5
       }
     },
     "assumptions": {
@@ -808,7 +808,7 @@ window.PROMPT_RESEARCH_DATA = {
       }
     },
     "changes": {
-      "count": 11,
+      "count": 12,
       "status": {
         "validated": 1,
         "validated-design": 4,
@@ -817,7 +817,8 @@ window.PROMPT_RESEARCH_DATA = {
         "development-reviewed-prototype": 1,
         "remediation-validated-pending-head-review": 1,
         "mechanically-validated-pending-head-review": 1,
-        "prototype": 1
+        "prototype": 1,
+        "remediation-validated": 1
       }
     }
   },
@@ -832,7 +833,7 @@ window.PROMPT_RESEARCH_DATA = {
       "id": "02",
       "name": "Source",
       "state": "done",
-      "note": "67 sources registered"
+      "note": "68 sources registered"
     },
     {
       "id": "03",

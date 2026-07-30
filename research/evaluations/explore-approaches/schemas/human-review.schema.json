@@ -3,7 +3,7 @@
   "$id": "explore-approaches-human-review.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "reviewer", "completed_at", "grades_sha256", "plan_sha256", "blind_packet_sha256", "rubric_sha256", "human_final", "adjudication_complete", "integrity_valid", "contamination_detected"],
+  "required": ["schema_version", "reviewer", "completed_at", "grades_sha256", "plan_sha256", "blind_packet_sha256", "rubric_sha256", "human_final", "adjudication_complete", "integrity_valid", "contamination_detected", "signature"],
   "properties": {
     "schema_version": {"const": "2.0"},
     "reviewer": {"type": "string", "minLength": 1},
@@ -16,6 +16,17 @@
     "adjudication_complete": {"const": true},
     "integrity_valid": {"type": "boolean"},
     "contamination_detected": {"type": "boolean"},
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "identity", "namespace", "value"],
+      "properties": {
+        "algorithm": {"const": "ssh-keygen-y"},
+        "identity": {"type": "string", "minLength": 1},
+        "namespace": {"const": "codex-skill-human-review"},
+        "value": {"type": "string", "minLength": 32}
+      }
+    },
     "notes": {"type": "string"}
   }
 }

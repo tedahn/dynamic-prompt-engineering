@@ -20,7 +20,9 @@
     "rubric_content_sha256",
     "arm_materials_sha256",
     "subject_runtime_sha256",
+    "lifecycle_executables_sha256",
     "plan_design_sha256",
+    "blind_key_commitment",
     "signature"
   ],
   "properties": {
@@ -82,7 +84,13 @@
     "subject_runtime_sha256": {
       "$ref": "#/$defs/sha256"
     },
+    "lifecycle_executables_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
     "plan_design_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "blind_key_commitment": {
       "$ref": "#/$defs/sha256"
     },
     "signature": {

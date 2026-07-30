@@ -22,12 +22,14 @@ from automation.core import (  # noqa: E402
     assess_summary,
     atomic_write_json,
     build_candidate_manifest,
+    ensure_private_file,
     load_config,
     load_json,
     sha256_file,
     sha256_json,
 )
 from automation.evaluation import (  # noqa: E402
+    BLIND_MAP_RELATIVE_PATH,
     _verified_plan,
     build_blind_bundle,
     build_holdout_manifest_template,
@@ -36,6 +38,7 @@ from automation.evaluation import (  # noqa: E402
     holdout_manifest_payload,
     run_provisional_grading,
     run_subjects,
+    verify_evidence_manifest,
     verify_frozen_holdout_signature,
 )
 from automation.event_store import EventStore  # noqa: E402
@@ -57,6 +60,7 @@ from automation.promotion import (  # noqa: E402
     validate_prepared_promotion,
     validate_release_record,
     verify_installed_candidate,
+    verify_github_actor,
     verify_merge_reachable,
     verify_merged_candidate,
     write_immutable_record,
@@ -85,7 +89,11 @@ def _config(path: Path, run_dir: Path | None = None) -> dict[str, Any]:
     else:
         value = load_config(path)
         value["repo_root"] = str(REPO_ROOT)
-    for settings_name in ("holdout_verification", "approval_verification"):
+    for settings_name in (
+        "holdout_verification",
+        "human_review_verification",
+        "approval_verification",
+    ):
         settings = value.get(settings_name, {})
         if settings.get("expected_identity"):
             for protected_root in (REPO_ROOT, run_dir):
@@ -155,6 +163,26 @@ def _require_event_hash(lifecycle: Lifecycle, event_type: str, expected_sha256: 
         raise PipelineError(f"Lifecycle {event_type} event does not bind the expected artifact")
 
 
+def _require_signed_holdout_event(lifecycle: Lifecycle, plan: dict[str, Any]) -> None:
+    matches = [
+        row
+        for row in lifecycle.store.events(lifecycle.stream)
+        if row["event_type"] == "SIGNED_HOLDOUT_VALIDATED"
+    ]
+    if len(matches) != 1:
+        raise PipelineError("Lifecycle lacks one immutable SIGNED_HOLDOUT_VALIDATED event")
+    payload = json.loads(matches[0]["payload_json"])
+    expected = {
+        "sha256": plan["holdout_manifest_sha256"],
+        "plan_sha256": plan["plan_sha256"],
+        "blind_key_commitment": plan["blind_key_commitment"],
+        "holdout_sha256": plan["holdout"]["sha256"],
+        "run_id": plan["run_id"],
+    }
+    if payload != expected:
+        raise PipelineError("Lifecycle SIGNED_HOLDOUT_VALIDATED event does not bind the frozen plan and blind key")
+
+
 def _freeze(
     run_dir: Path,
     holdout: Path | None,
@@ -189,12 +217,15 @@ def _freeze(
             "SIGNED_HOLDOUT_VALIDATED",
             {
                 "sha256": plan["holdout_manifest_sha256"],
+                "plan_sha256": plan["plan_sha256"],
+                "blind_key_commitment": plan["blind_key_commitment"],
                 "holdout_sha256": plan["holdout"]["sha256"],
                 "run_id": plan["run_id"],
             },
         )
     if lifecycle.current["state"] != "holdout-ready":
         raise PipelineError(f"Cannot freeze from lifecycle state {lifecycle.current['state']}")
+    _require_signed_holdout_event(lifecycle, plan)
     return plan
 
 
@@ -257,6 +288,13 @@ def _approval_template(run_dir: Path, config: dict[str, Any]) -> dict[str, Any]:
         raise PipelineError("Recorded assessment differs from the frozen deterministic classification")
     if recomputed.get("promotable") is not True or recomputed.get("classification") != "promotable":
         raise PipelineError("Cannot create a promotion approval template for inconclusive evidence")
+    evidence_manifest = verify_evidence_manifest(run_dir, config)
+    blind_map = evidence_manifest["artifacts"]["blind_map"]
+    if (
+        blind_map.get("path") != BLIND_MAP_RELATIVE_PATH
+        or blind_map.get("sha256") != evidence_manifest.get("blind_map_sha256")
+    ):
+        raise PipelineError("Canonical evidence does not bind the private blind map")
     manifest = _manifest(run_dir, config)
     rollback_path = run_dir / "rollback-evidence.json"
     if not rollback_path.is_file():
@@ -267,7 +305,8 @@ def _approval_template(run_dir: Path, config: dict[str, Any]) -> dict[str, Any]:
         "schema_version": "2.0",
         "approval_id": f"APPROVAL-{uuid.uuid4().hex[:16]}",
         "decision": "promote",
-        "approved_by": "REPLACE_WITH_NAMED_HUMAN",
+        "approved_by": config["approval_verification"].get("expected_identity")
+        or "REPLACE_WITH_NAMED_HUMAN",
         "approved_at": "REPLACE_WITH_POST_RESULT_RFC3339_TIME",
         "expires_at": "REPLACE_WITH_RFC3339_EXPIRY",
         "evaluation_completed_at": summary["completed_at"],
@@ -280,11 +319,15 @@ def _approval_template(run_dir: Path, config: dict[str, Any]) -> dict[str, Any]:
         "evidence": {
             "evaluation_summary_sha256": sha256_file(summary_path),
             "evidence_manifest_sha256": sha256_file(run_dir / "evidence-manifest.json"),
+            "blind_key_commitment": plan["blind_key_commitment"],
+            "blind_map_path": BLIND_MAP_RELATIVE_PATH,
+            "blind_map_sha256": evidence_manifest["blind_map_sha256"],
             "holdout_manifest_sha256": sha256_file(run_dir / "holdout-manifest.json"),
             "protocol_sha256": plan["protocol_sha256"],
             "rubric_sha256": plan["rubric_sha256"],
             "rollback_evidence_sha256": sha256_file(rollback_path),
             "config_sha256": plan["config_sha256"],
+            "lifecycle_executables_sha256": plan["lifecycle_executables_sha256"],
         },
         "target": {
             "repository_url": promotion["repository_url"],
@@ -309,6 +352,7 @@ def _approval_template(run_dir: Path, config: dict[str, Any]) -> dict[str, Any]:
 def _verify_promotion_inputs(run_dir: Path, approval_path: Path, config: dict[str, Any]) -> dict[str, Any]:
     plan, _ = _verified_plan(run_dir, config)
     verify_frozen_holdout_signature(run_dir, config)
+    verify_evidence_manifest(run_dir, config)
     assessment = load_json(run_dir / "assessment.json")
     recomputed = assess_summary(load_json(run_dir / "evaluation-summary.json"), config)
     if assessment != recomputed:
@@ -340,12 +384,14 @@ def _verified_approval(
         if persisted.exists():
             if persisted.is_symlink() or not persisted.is_file():
                 raise PipelineError("Persisted approval path is unsafe")
+            ensure_private_file(persisted)
             if load_json(persisted) != approval:
                 raise PipelineError("Provided approval differs from the immutable persisted approval")
         else:
             atomic_write_json(persisted, approval)
     elif not persisted.is_file() or persisted.is_symlink():
         raise PipelineError("Active recovery lacks the exact persisted signed approval")
+    ensure_private_file(persisted)
     approval = _verify_promotion_inputs(run_dir, persisted, config)
     return persisted, approval
 
@@ -394,7 +440,10 @@ def _promote(run_dir: Path, approval_path: Path | None, config: dict[str, Any], 
 
     pr_path = run_dir / "pr-record.json"
     if pr_path.is_file():
+        active_actor = verify_github_actor(config, cwd=Path(prepared["clone"]))
         pr_record = load_immutable_record(pr_path, status="pr-open")
+        if str(pr_record.get("github_actor", "")).casefold() != active_actor.casefold():
+            raise PipelineError("Pull-request recovery credential differs from its immutable receipt")
     else:
         if lifecycle.current["state"] != "promoting":
             raise PipelineError("Pull-request receipt is missing during recovery")
@@ -413,9 +462,19 @@ def _promote(run_dir: Path, approval_path: Path | None, config: dict[str, Any], 
         "config_sha256": sha256_json(config),
         "base_commit": approval["candidate"]["base_commit"],
         "head_commit": prepared["head_commit"],
+        "github_actor": config["promotion"]["automation_actor"],
     }
     if any(pr_record.get(key) != value for key, value in expected_pr_bindings.items()):
-        raise PipelineError("Pull-request receipt differs from the approved promotion")
+        actor_matches = str(pr_record.get("github_actor", "")).casefold() == str(
+            config["promotion"]["automation_actor"]
+        ).casefold()
+        non_actor_bindings = {
+            key: value for key, value in expected_pr_bindings.items() if key != "github_actor"
+        }
+        if not actor_matches or any(
+            pr_record.get(key) != value for key, value in non_actor_bindings.items()
+        ):
+            raise PipelineError("Pull-request receipt differs from the approved promotion")
     if lifecycle.current["state"] == "promoting":
         _advance(
             lifecycle,
@@ -533,7 +592,13 @@ def command_manifest(args: argparse.Namespace) -> int:
 def command_holdout_template(args: argparse.Namespace) -> int:
     config = _config(args.config)
     candidate_manifest = build_candidate_manifest(REPO_ROOT, config)
-    value = build_holdout_manifest_template(REPO_ROOT, args.holdout, config, candidate_manifest)
+    value = build_holdout_manifest_template(
+        REPO_ROOT,
+        args.holdout,
+        config,
+        candidate_manifest,
+        run_dir=args.run_dir,
+    )
     atomic_write_json(args.output, value)
     payload_path = args.output.with_suffix(args.output.suffix + ".payload")
     payload_path.parent.mkdir(parents=True, exist_ok=True)
@@ -769,6 +834,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     holdout_template = subparsers.add_parser("holdout-template")
     holdout_template.add_argument("--holdout", type=_path, required=True)
+    holdout_template.add_argument("--run-dir", type=_path, required=True)
     holdout_template.add_argument("--output", type=_path, required=True)
     holdout_template.set_defaults(function=command_holdout_template)
 

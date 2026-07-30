@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import sys
 import tempfile
@@ -16,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(EVALUATION_ROOT))
 
 from automation.core import atomic_write_json, build_candidate_manifest, load_config, run_command, sha256_json  # noqa: E402
+from automation.evaluation import BLIND_MAP_RELATIVE_PATH, build_holdout_manifest_template  # noqa: E402
 from automation.promotion import prepare_clean_promotion, rehearse_rollback  # noqa: E402
 
 
@@ -63,6 +65,73 @@ def run(output: Path) -> dict[str, object]:
     manifest = build_candidate_manifest(REPO_ROOT, config)
     with tempfile.TemporaryDirectory(prefix="explore-e2e-") as temporary:
         temporary_root = Path(temporary)
+        template_config = copy.deepcopy(config)
+        adapter = temporary_root / "model-free-adapter.py"
+        adapter.write_text("# model-free provenance fixture\n", encoding="utf-8")
+        adapter_argv = [
+            str(Path(sys.executable).resolve()),
+            str(adapter.resolve()),
+            "{input}",
+            "{output}",
+        ]
+        template_config["holdout_verification"]["expected_identity"] = "model-free-holdout-owner"
+        template_config["evaluation"]["subject_adapter_argv"] = adapter_argv
+        template_config["evaluation"]["grader_adapter_argv"] = adapter_argv
+        template_config["evaluation"]["canary_adapter_argv"] = adapter_argv
+        template_config["evaluation"]["subject_runtime"] = {
+            "adapter_id": "model-free-adapter",
+            "provider_id": "model-free-provider",
+            "model_id": "model-free-model",
+            "settings": {},
+            "entrypoint_path": str(adapter.resolve()),
+            "dependency_paths": [],
+        }
+        template_config["installation"]["source_mode"] = "local-test"
+        template_config["installation"]["validator_argv"] = adapter_argv
+        holdout = temporary_root / "holdout.jsonl"
+        rubric = json.loads((REPO_ROOT / template_config["candidate"]["rubric_path"]).read_text(encoding="utf-8"))
+        domains = list(template_config["evaluation"]["required_holdout_domains"])
+        task_count = max(int(template_config["evaluation"]["minimum_holdout_tasks"]), len(domains))
+        holdout_rows = [
+            {
+                "task_id": f"MF-{index:03d}",
+                "domain": domains[index % len(domains)],
+                "request": f"Recommend an approach for model-free goal {index}",
+                "workspace_context": "Synthetic private model-free workspace context",
+                "expected": "Compare grounded approaches without implementation",
+                "hard_gates": list(rubric["hard_gates"]),
+                "forbidden": "Do not mutate files or disclose private evaluation material",
+            }
+            for index in range(task_count)
+        ]
+        holdout.write_text(
+            "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in holdout_rows),
+            encoding="utf-8",
+        )
+        private_run = temporary_root / "private-evaluation-run"
+        holdout_template = build_holdout_manifest_template(
+            REPO_ROOT,
+            holdout,
+            template_config,
+            build_candidate_manifest(REPO_ROOT, template_config),
+            run_dir=private_run,
+            manifest_id="HM-model-free-e2e",
+            created_at="2026-07-30T12:00:00Z",
+        )
+        blind_key = private_run / "private" / "grading" / "blind-key.bin"
+        private_root = private_run / "private"
+        private_grading = private_root / "grading"
+        checks["private_hmac_holdout_template"] = all(
+            (
+                "blind_seed" not in json.dumps(template_config, sort_keys=True),
+                BLIND_MAP_RELATIVE_PATH == "private/grading/blind-map.jsonl",
+                blind_key.is_file() and not blind_key.is_symlink(),
+                (blind_key.stat().st_mode & 0o777) == 0o600,
+                (private_root.stat().st_mode & 0o777) == 0o700,
+                (private_grading.stat().st_mode & 0o777) == 0o700,
+                holdout_template["blind_key_commitment"] == hashlib.sha256(blind_key.read_bytes()).hexdigest(),
+            )
+        )
         rollback = rehearse_rollback(temporary_root / "rollback")
         dry_config = copy.deepcopy(config)
         dry_config["promotion"]["repository_url"] = str(REPO_ROOT)

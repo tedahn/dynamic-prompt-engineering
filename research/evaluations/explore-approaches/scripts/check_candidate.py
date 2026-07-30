@@ -28,6 +28,13 @@ REQUIRED_CONTENT_SAFETY_GATES = {
     "no_secret_disclosure_or_use",
 }
 
+SHA256_PATTERN = "^[0-9a-f]{64}$"
+BLIND_EVIDENCE_FIELDS = {
+    "blind_key_commitment",
+    "blind_packet_sha256",
+    "blind_map_sha256",
+}
+
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -123,7 +130,7 @@ def validate_record_schema(schema: dict[str, Any], name: str, required_fields: s
     missing = sorted(required_fields - set(schema.get("required", [])))
     if missing:
         errors.append(f"{name} schema omits required fields: {', '.join(missing)}")
-    if schema.get("properties", {}).get("record_sha256", {}).get("pattern") != "^[0-9a-f]{64}$":
+    if schema.get("properties", {}).get("record_sha256", {}).get("pattern") != SHA256_PATTERN:
         errors.append(f"{name} schema does not require a SHA-256 record seal")
     return errors
 
@@ -169,8 +176,10 @@ def validate(repo_root: Path) -> dict[str, Any]:
         "release_record_schema": repo_root / "research/evaluations/explore-approaches/schemas/release-record.schema.json",
         "adapter_request_schema": repo_root / "research/evaluations/explore-approaches/schemas/adapter-request.schema.json",
         "adapter_response_schema": repo_root / "research/evaluations/explore-approaches/schemas/adapter-response.schema.json",
+        "grade_record_schema": repo_root / "research/evaluations/explore-approaches/schemas/grade-record.schema.json",
         "evaluation_summary_schema": repo_root / "research/evaluations/explore-approaches/schemas/evaluation-summary.schema.json",
         "evidence_manifest_schema": repo_root / "research/evaluations/explore-approaches/schemas/evidence-manifest.schema.json",
+        "subject_runtime_schema": repo_root / "research/evaluations/explore-approaches/schemas/subject-runtime.schema.json",
         "human_review_schema": repo_root / "research/evaluations/explore-approaches/schemas/human-review.schema.json",
         "pipeline_config": repo_root / "research/evaluations/explore-approaches/config/pipeline-v1.json",
         "automation_core": repo_root / "research/evaluations/explore-approaches/automation/core.py",
@@ -214,8 +223,15 @@ def validate(repo_root: Path) -> dict[str, Any]:
     if not required_approval.issubset(set(schema.get("required", []))):
         errors.append("promotion schema omits required approval evidence")
     evidence_required = set(schema.get("properties", {}).get("evidence", {}).get("required", []))
-    if not {"evaluation_summary_sha256", "evidence_manifest_sha256", "holdout_manifest_sha256", "protocol_sha256", "rubric_sha256", "rollback_evidence_sha256", "config_sha256"}.issubset(evidence_required):
+    if not {"evaluation_summary_sha256", "evidence_manifest_sha256", "blind_key_commitment", "blind_map_path", "blind_map_sha256", "holdout_manifest_sha256", "protocol_sha256", "rubric_sha256", "rollback_evidence_sha256", "config_sha256", "lifecycle_executables_sha256"}.issubset(evidence_required):
         errors.append("promotion schema omits immutable evidence bindings")
+    approval_evidence_properties = schema.get("properties", {}).get("evidence", {}).get("properties", {})
+    if approval_evidence_properties.get("blind_key_commitment", {}).get("pattern") != SHA256_PATTERN:
+        errors.append("promotion schema does not require a 64-hex blind key commitment")
+    if approval_evidence_properties.get("blind_map_sha256", {}).get("pattern") != SHA256_PATTERN:
+        errors.append("promotion schema does not require a 64-hex blind-map hash")
+    if approval_evidence_properties.get("blind_map_path", {}).get("const") != "private/grading/blind-map.jsonl":
+        errors.append("promotion schema does not bind the canonical private blind-map path")
     serialized_schema = json.dumps(schema, sort_keys=True)
     for circular_field in ["github_pr_url", "merged_commit"]:
         if circular_field in serialized_schema:
@@ -234,10 +250,60 @@ def validate(repo_root: Path) -> dict[str, Any]:
         "rubric_content_sha256",
         "arm_materials_sha256",
         "subject_runtime_sha256",
+        "lifecycle_executables_sha256",
         "plan_design_sha256",
+        "blind_key_commitment",
         "signature",
     }.issubset(holdout_required):
         errors.append("holdout schema omits custody or frozen-evidence bindings")
+
+    human_review_schema = json.loads(paths["human_review_schema"].read_text(encoding="utf-8"))
+    if not {"reviewer", "signature"}.issubset(set(human_review_schema.get("required", []))):
+        errors.append("human-review schema omits signed reviewer attribution")
+
+    grade_schema = json.loads(paths["grade_record_schema"].read_text(encoding="utf-8"))
+    grade_properties = grade_schema.get("properties", {})
+    if not {"packet_id", "candidate_grades", "ranking"}.issubset(set(grade_schema.get("required", []))):
+        errors.append("grade-record schema omits required blinded identifiers")
+    if grade_properties.get("packet_id", {}).get("pattern") != SHA256_PATTERN:
+        errors.append("grade-record schema does not require a 64-hex packet ID")
+    candidate_grade_schema = grade_properties.get("candidate_grades", {}).get("items", {})
+    if "candidate_id" not in set(candidate_grade_schema.get("required", [])):
+        errors.append("grade-record schema does not require candidate IDs")
+    candidate_id_schema = candidate_grade_schema.get("properties", {}).get("candidate_id", {})
+    if candidate_id_schema.get("pattern") != SHA256_PATTERN:
+        errors.append("grade-record schema does not require 64-hex candidate IDs")
+    ranking_id_schema = (
+        grade_properties.get("ranking", {})
+        .get("items", {})
+        .get("items", {})
+    )
+    if ranking_id_schema.get("pattern") != SHA256_PATTERN:
+        errors.append("grade-record schema does not require 64-hex ranking IDs")
+
+    summary_schema = json.loads(paths["evaluation_summary_schema"].read_text(encoding="utf-8"))
+    summary_evidence = summary_schema.get("properties", {}).get("evidence", {})
+    if not (BLIND_EVIDENCE_FIELDS | {"blind_map_path"}).issubset(set(summary_evidence.get("required", []))):
+        errors.append("evaluation-summary schema omits private blinding evidence bindings")
+    if summary_schema.get("$defs", {}).get("sha256", {}).get("pattern") != SHA256_PATTERN:
+        errors.append("evaluation-summary schema does not constrain evidence hashes to 64 hex characters")
+    for field in sorted(BLIND_EVIDENCE_FIELDS):
+        if summary_evidence.get("properties", {}).get(field, {}).get("$ref") != "#/$defs/sha256":
+            errors.append(f"evaluation-summary schema does not type {field} as SHA-256")
+    if summary_evidence.get("properties", {}).get("blind_map_path", {}).get("const") != "private/grading/blind-map.jsonl":
+        errors.append("evaluation-summary schema does not bind the canonical private blind-map path")
+
+    evidence_schema = json.loads(paths["evidence_manifest_schema"].read_text(encoding="utf-8"))
+    if not BLIND_EVIDENCE_FIELDS.issubset(set(evidence_schema.get("required", []))):
+        errors.append("evidence-manifest schema omits private blinding evidence bindings")
+    if evidence_schema.get("$defs", {}).get("sha256", {}).get("pattern") != SHA256_PATTERN:
+        errors.append("evidence-manifest schema does not constrain evidence hashes to 64 hex characters")
+    for field in sorted(BLIND_EVIDENCE_FIELDS):
+        if evidence_schema.get("properties", {}).get(field, {}).get("$ref") != "#/$defs/sha256":
+            errors.append(f"evidence-manifest schema does not type {field} as SHA-256")
+    evidence_artifacts = evidence_schema.get("properties", {}).get("artifacts", {})
+    if "blind_map" not in set(evidence_artifacts.get("required", [])):
+        errors.append("evidence-manifest schema omits the private blind-map artifact")
 
     for record_name in ("pr_record_schema", "release_record_schema", "install_intent_schema", "installation_record_schema", "canary_record_schema", "rollback_record_schema"):
         record_schema = json.loads(paths[record_name].read_text(encoding="utf-8"))
@@ -259,6 +325,7 @@ def validate(repo_root: Path) -> dict[str, Any]:
                 "staged_paths",
                 "pr_url",
                 "opened_at",
+                "github_actor",
                 "status",
                 "record_sha256",
             },
@@ -281,6 +348,7 @@ def validate(repo_root: Path) -> dict[str, Any]:
                 "merge_commit",
                 "merged_at",
                 "github_evidence",
+                "github_actor",
                 "status",
                 "record_sha256",
             },
@@ -288,6 +356,9 @@ def validate(repo_root: Path) -> dict[str, Any]:
     )
 
     config = json.loads(paths["pipeline_config"].read_text(encoding="utf-8"))
+    human_review_verification = config.get("human_review_verification", {})
+    if human_review_verification.get("namespace") != "codex-skill-human-review":
+        errors.append("pipeline config omits the dedicated signed human-review identity namespace")
     if config.get("evaluation", {}).get("arms") != ["B00_RAW", "B01_MIN_ADVICE", "B02_PROFESSIONALIZE", "C01_EXPLORE"]:
         errors.append("pipeline config changes the frozen four-arm design")
     for key in ["subject_adapter_argv", "grader_adapter_argv", "canary_adapter_argv", "thresholds"]:
@@ -310,6 +381,13 @@ def validate(repo_root: Path) -> dict[str, Any]:
     ):
         errors.append("committed pipeline config must keep required reviewer logins as non-live placeholders")
     evaluation = config.get("evaluation", {})
+    if "blind_seed" in json.dumps(config, sort_keys=True):
+        errors.append("pipeline config exposes the removed public blind_seed")
+    runtime = evaluation.get("subject_runtime", {})
+    if not isinstance(runtime.get("entrypoint_path"), str) or not isinstance(runtime.get("dependency_paths"), list):
+        errors.append("pipeline config omits concrete subject entrypoint and dependency provenance fields")
+    if "image_digest" in runtime or "artifact_paths" in runtime:
+        errors.append("pipeline config permits unsupported declarative or ambiguous runtime provenance")
     if not REQUIRED_CONTENT_SAFETY_GATES.issubset(set(evaluation.get("critical_gate_ids", []))):
         errors.append("pipeline config does not classify both content-safety gates as critical")
     if not {"security", "privacy"}.issubset(set(evaluation.get("required_holdout_domains", []))):

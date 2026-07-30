@@ -62,6 +62,23 @@ class LifecycleCliTest(unittest.TestCase):
             with self.assertRaisesRegex(CLI.PipelineError, "configuration hash mismatch"):
                 CLI._config(configured, run_dir)
 
+    def test_promotion_reverifies_evidence_after_signed_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)
+            approval = run_dir / "approval.json"
+            CLI.atomic_write_json(approval, {"signed": True})
+            with (
+                mock.patch.object(CLI, "_verified_plan", return_value=({"candidate_manifest_sha256": "a" * 64}, {})),
+                mock.patch.object(CLI, "verify_frozen_holdout_signature"),
+                mock.patch.object(
+                    CLI,
+                    "verify_evidence_manifest",
+                    side_effect=CLI.PipelineError("after-signature evidence mutation"),
+                ),
+            ):
+                with self.assertRaisesRegex(CLI.PipelineError, "after-signature evidence mutation"):
+                    CLI._verify_promotion_inputs(run_dir, approval, {})
+
     def test_approval_template_rejects_non_promotable_or_tampered_assessment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             run_dir = Path(temporary)
@@ -79,13 +96,72 @@ class LifecycleCliTest(unittest.TestCase):
                 with self.assertRaisesRegex(CLI.PipelineError, "Recorded assessment differs"):
                     CLI._approval_template(run_dir, {})
 
+    def test_approval_template_reverifies_final_evidence_and_binds_private_map(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)
+            summary = {"completed_at": "2026-07-30T12:00:00Z", "evidence": {}}
+            assessment = {"classification": "promotable", "promotable": True}
+            plan = {
+                "base_commit": "a" * 40,
+                "blind_key_commitment": "b" * 64,
+                "protocol_sha256": "c" * 64,
+                "rubric_sha256": "d" * 64,
+                "config_sha256": "e" * 64,
+                "lifecycle_executables_sha256": "f" * 64,
+            }
+            candidate_manifest = {"manifest_sha256": "1" * 64}
+            evidence_manifest = {
+                "blind_map_sha256": "2" * 64,
+                "artifacts": {
+                    "blind_map": {
+                        "path": "private/grading/blind-map.jsonl",
+                        "sha256": "2" * 64,
+                    }
+                },
+            }
+            config = {
+                "candidate": {"name": "explore-approaches", "version": "explore-approaches-v0.1.0"},
+                "approval_verification": {
+                    "expected_identity": "Named Human",
+                    "namespace": "codex-skill-promotion",
+                },
+                "promotion": {
+                    "repository_url": "https://github.com/example/repo.git",
+                    "repository_slug": "example/repo",
+                    "base_branch": "main",
+                    "feature_branch": "codex/explore-approaches-v0.1.0",
+                },
+                "installation": {"skills_root": "/tmp/root-skills", "skill_name": "explore-approaches"},
+            }
+            for path, value in (
+                (run_dir / "plan.json", plan),
+                (run_dir / "evaluation-summary.json", summary),
+                (run_dir / "assessment.json", assessment),
+                (run_dir / "evidence-manifest.json", {"synthetic": True}),
+                (run_dir / "holdout-manifest.json", {"synthetic": True}),
+                (run_dir / "rollback-evidence.json", {"result": "passed"}),
+            ):
+                CLI.atomic_write_json(path, value)
+            with (
+                mock.patch.object(CLI, "assess_summary", return_value=assessment),
+                mock.patch.object(CLI, "verify_evidence_manifest", return_value=evidence_manifest) as verifier,
+                mock.patch.object(CLI, "_manifest", return_value=candidate_manifest),
+            ):
+                template = CLI._approval_template(run_dir, config)
+            verifier.assert_called_once_with(run_dir, config)
+            self.assertEqual(template["evidence"]["blind_key_commitment"], plan["blind_key_commitment"])
+            self.assertEqual(template["evidence"]["blind_map_path"], "private/grading/blind-map.jsonl")
+            self.assertEqual(template["evidence"]["blind_map_sha256"], "2" * 64)
+
     def test_freeze_recovers_plan_before_lifecycle_events(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             run_dir = Path(temporary)
             CLI.atomic_write_json(run_dir / "plan.json", {"placeholder": True})
             plan = {
                 "run_id": "EA-recovery",
+                "plan_sha256": "d" * 64,
                 "candidate_manifest_sha256": "a" * 64,
+                "blind_key_commitment": "e" * 64,
                 "holdout_manifest_sha256": "b" * 64,
                 "holdout": {"sha256": "c" * 64},
             }
@@ -100,6 +176,14 @@ class LifecycleCliTest(unittest.TestCase):
                     self.assertEqual(CLI._freeze(run_dir, None, None, {}, lifecycle), plan)
                 signature_check.assert_called_once_with(run_dir, {})
                 self.assertEqual(lifecycle.current["state"], "holdout-ready")
+                holdout_event = next(
+                    row
+                    for row in store.events(lifecycle.stream)
+                    if row["event_type"] == "SIGNED_HOLDOUT_VALIDATED"
+                )
+                event_payload = json.loads(holdout_event["payload_json"])
+                self.assertEqual(event_payload["plan_sha256"], plan["plan_sha256"])
+                self.assertEqual(event_payload["blind_key_commitment"], plan["blind_key_commitment"])
             finally:
                 store.close()
 
@@ -110,7 +194,9 @@ class LifecycleCliTest(unittest.TestCase):
             manifest = {"manifest_sha256": "a" * 64}
             plan = {
                 "run_id": "EA-forged",
+                "plan_sha256": "d" * 64,
                 "candidate_manifest_sha256": manifest["manifest_sha256"],
+                "blind_key_commitment": "e" * 64,
                 "holdout_manifest_sha256": "b" * 64,
                 "holdout": {"sha256": "c" * 64},
             }
@@ -131,6 +217,49 @@ class LifecycleCliTest(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_resume_rejects_legacy_holdout_event_without_plan_and_key_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)
+            CLI.atomic_write_json(run_dir / "plan.json", {"placeholder": True})
+            manifest = {"manifest_sha256": "a" * 64}
+            plan = {
+                "run_id": "EA-legacy-event",
+                "plan_sha256": "d" * 64,
+                "candidate_manifest_sha256": manifest["manifest_sha256"],
+                "blind_key_commitment": "e" * 64,
+                "holdout_manifest_sha256": "b" * 64,
+                "holdout": {"sha256": "c" * 64},
+            }
+            store, lifecycle = CLI._lifecycle(run_dir)
+            try:
+                lifecycle.advance(
+                    "frozen",
+                    "CANDIDATE_FROZEN",
+                    {"sha256": manifest["manifest_sha256"]},
+                    actor="test",
+                    idempotency_key="test:frozen",
+                )
+                lifecycle.advance(
+                    "holdout-ready",
+                    "SIGNED_HOLDOUT_VALIDATED",
+                    {
+                        "sha256": plan["holdout_manifest_sha256"],
+                        "holdout_sha256": plan["holdout"]["sha256"],
+                        "run_id": plan["run_id"],
+                    },
+                    actor="test",
+                    idempotency_key="test:legacy-holdout-ready",
+                )
+                with (
+                    mock.patch.object(CLI, "_manifest", return_value=manifest),
+                    mock.patch.object(CLI, "_verified_plan", return_value=(plan, {})),
+                    mock.patch.object(CLI, "verify_frozen_holdout_signature"),
+                ):
+                    with self.assertRaisesRegex(CLI.PipelineError, "frozen plan and blind key"):
+                        CLI._freeze(run_dir, None, None, {}, lifecycle)
+            finally:
+                store.close()
+
     def test_pr_release_and_install_receipts_are_event_bound_and_resumable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             run_dir = Path(temporary)
@@ -143,7 +272,11 @@ class LifecycleCliTest(unittest.TestCase):
             manifest = {"manifest_sha256": "b" * 64}
             config = {
                 "candidate": {"skill_path": "skills/explore-approaches"},
-                "promotion": {"repository_url": "https://example.invalid/repo.git"},
+                "promotion": {
+                    "repository_url": "https://example.invalid/repo.git",
+                    "automation_actor": "automation",
+                    "required_reviewer_logins": ["reviewer"],
+                },
                 "installation": {"skills_root": str(run_dir / "root"), "skill_name": "explore-approaches"},
             }
             prepared = {
@@ -152,13 +285,14 @@ class LifecycleCliTest(unittest.TestCase):
                 "head_commit": "c" * 40,
                 "staged_paths": ["skills/explore-approaches/SKILL.md"],
             }
-            opened = {"pr_url": "https://example.invalid/pr/1", "head_commit": "c" * 40, "opened_at": "2026-07-30T12:00:00Z"}
+            opened = {"pr_url": "https://example.invalid/pr/1", "head_commit": "c" * 40, "opened_at": "2026-07-30T12:00:00Z", "github_actor": "automation"}
             merged = {
                 "pr_url": opened["pr_url"],
                 "head_commit": opened["head_commit"],
                 "merge_commit": "d" * 40,
                 "merged_at": "2026-07-30T12:30:00Z",
-                "github_evidence": {"approved_reviewers": ["reviewer"], "successful_checks": ["validate"]},
+                "github_evidence": {"approved_reviewers": ["reviewer"], "successful_checks": ["validate"], "github_actor": "automation"},
+                "github_actor": "automation",
             }
             receipt = {"record_sha256": "e" * 64, "merge_commit": merged["merge_commit"], "status": "installed"}
 
@@ -170,6 +304,7 @@ class LifecycleCliTest(unittest.TestCase):
                     mock.patch.object(CLI, "prepare_clean_promotion", return_value=prepared),
                     mock.patch.object(CLI, "validate_prepared_promotion", return_value=prepared),
                     mock.patch.object(CLI, "push_and_open_pr", return_value=opened),
+                    mock.patch.object(CLI, "verify_github_actor", return_value="automation"),
                 ):
                     pr_record = CLI._promote(run_dir, approval_path, config, lifecycle, True)
                     self.assertEqual(lifecycle.current["state"], "pr-open")
@@ -245,12 +380,16 @@ class LifecycleCliTest(unittest.TestCase):
             manifest = {"manifest_sha256": "b" * 64}
             config = {
                 "candidate": {"skill_path": "skills/explore-approaches"},
-                "promotion": {"repository_url": "https://example.invalid/repo.git"},
+                "promotion": {
+                    "repository_url": "https://example.invalid/repo.git",
+                    "automation_actor": "automation",
+                    "required_reviewer_logins": ["reviewer"],
+                },
                 "installation": {"skills_root": str(run_dir / "root"), "skill_name": "explore-approaches"},
             }
             prepared = {"clone": str(run_dir / "clone"), "base_commit": "a" * 40, "head_commit": "c" * 40, "staged_paths": []}
-            opened = {"pr_url": "https://example.invalid/pr/1", "head_commit": "c" * 40, "opened_at": "2026-07-30T12:00:00Z"}
-            verified_merge = {"pr_url": opened["pr_url"], "head_commit": opened["head_commit"], "merge_commit": "d" * 40, "merged_at": "2026-07-30T12:30:00Z", "github_evidence": {"approved_reviewers": ["reviewer"], "successful_checks": ["validate"]}}
+            opened = {"pr_url": "https://example.invalid/pr/1", "head_commit": "c" * 40, "opened_at": "2026-07-30T12:00:00Z", "github_actor": "automation"}
+            verified_merge = {"pr_url": opened["pr_url"], "head_commit": opened["head_commit"], "merge_commit": "d" * 40, "merged_at": "2026-07-30T12:30:00Z", "github_evidence": {"approved_reviewers": ["reviewer"], "successful_checks": ["validate"], "github_actor": "automation"}, "github_actor": "automation"}
             forged_merge = {**verified_merge, "merge_commit": "e" * 40}
             store, lifecycle = self._awaiting_lifecycle(run_dir)
             try:

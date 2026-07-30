@@ -30,8 +30,8 @@ The candidate operationalizes review independence, provenance, target integrity,
 - **Synthetic fixtures:** `research/evaluations/skill-review-process/fixtures/fixtures-v1.jsonl`
 - **Deterministic tests:** `research/evaluations/skill-review-process/tests/test_review_bundle.py`
 - **Development target:** GitHub PR #1 frozen at head `8371f0f9634bf86e3417bae09772418034239969`.
-- **Current result:** The skill and bundle schemas validate; eight unit tests cover target freeze, overwrite refusal, missing-role failure, provisional clean review, open-P1 gating, duplicate identity, stale hashes, and packet drift. Three isolated reviewers and a separate adjudicator completed the frozen PR #1 development cycle. Seven findings were upheld: three open P1 and four open P2. The computed merge gate is `changes_required`; the human decision remains pending.
-- **Remediation status:** Targeted mechanical validation now addresses all seven PR #1 findings in the working tree, with 25 pilot, 17 context-composer, and 44 explore-approaches tests passing. These checks are not review closure evidence. PR #1 remains immutable; a fresh exact-head review is still required before merge.
+- **Current result:** The original frozen PR #1 cycle used eight unit tests and upheld seven findings: three open P1 and four open P2. The current validator adds exhaustive schema and Git-failure coverage, with 16 bundle tests and 20 full review-process tests passing. The PR #1 packet remains immutable and its computed merge gate remains `changes_required`.
+- **Remediation status:** Targeted mechanical validation addresses all seven PR #1 findings and the two P1 plus seven P2 findings from exact-head review PR-003, with 25 pilot, 17 context-composer, 58 explore-approaches lifecycle, and 20 review-process tests passing. These checks are not review closure evidence. A replacement exact-head review is still required before merge.
 - **Open gate:** Run a new frozen-head review before any merge decision. Separately run a fresh blinded matched-budget B0/B1/C1/C2 holdout with resource measures and independent human grading before promotion or installation.
 
 ## Operations

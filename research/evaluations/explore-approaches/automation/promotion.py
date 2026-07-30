@@ -19,6 +19,8 @@ from .core import (
     PipelineError,
     atomic_write_json,
     canonical_json_bytes,
+    ensure_private_directory,
+    ensure_private_file,
     is_within,
     iso_now,
     load_json,
@@ -30,7 +32,12 @@ from .core import (
     utc_now,
     validate_relative_path,
 )
-from .evaluation import invoke_adapter
+from .evaluation import (
+    BLIND_MAP_RELATIVE_PATH,
+    invoke_adapter,
+    verify_evidence_manifest,
+    verify_lifecycle_executable_binding,
+)
 
 
 REQUIRED_PERMISSIONS = {
@@ -82,6 +89,7 @@ def write_immutable_record(path: Path, record: dict[str, Any]) -> dict[str, Any]
     if path.exists():
         if path.is_symlink() or not path.is_file():
             raise PipelineError(f"Unsafe immutable record path: {path}")
+        ensure_private_file(path)
         existing = load_json(path)
         validate_sealed_record(existing)
         if canonical_json_bytes(existing) != canonical_json_bytes(sealed):
@@ -94,6 +102,7 @@ def write_immutable_record(path: Path, record: dict[str, Any]) -> dict[str, Any]
 def load_immutable_record(path: Path, *, status: str | None = None) -> dict[str, Any]:
     if not path.is_file() or path.is_symlink():
         raise PipelineError(f"Immutable record is missing or unsafe: {path}")
+    ensure_private_file(path)
     record = load_json(path)
     validate_sealed_record(record, status=status)
     return record
@@ -234,6 +243,9 @@ def validate_approval(
         raise PipelineError("Automated promotion does not permit signed threshold exceptions")
     if not isinstance(approval.get("approved_by"), str) or not approval["approved_by"].strip() or "REPLACE_WITH" in approval["approved_by"]:
         raise PipelineError("Approval lacks a named human approver")
+    verified_identity = str(config.get("approval_verification", {}).get("expected_identity", ""))
+    if not verified_identity or approval["approved_by"] != verified_identity:
+        raise PipelineError("Approval attribution does not match the verified approval identity")
     if set(approval["permissions"]) != REQUIRED_PERMISSIONS:
         raise PipelineError("Approval permissions are incomplete or over-broad")
     completed_at = parse_time(str(summary.get("completed_at")))
@@ -255,17 +267,28 @@ def validate_approval(
     evidence_manifest_path = evaluation_summary_path.parent / "evidence-manifest.json"
     if not evidence_manifest_path.is_file() or evidence_manifest_path.is_symlink():
         raise PipelineError("Promotion requires the canonical evaluation evidence manifest")
+    verified_evidence_manifest = verify_evidence_manifest(evaluation_summary_path.parent, config)
+    blind_map_artifact = verified_evidence_manifest.get("artifacts", {}).get("blind_map", {})
+    if (
+        blind_map_artifact.get("path") != BLIND_MAP_RELATIVE_PATH
+        or blind_map_artifact.get("sha256") != verified_evidence_manifest.get("blind_map_sha256")
+    ):
+        raise PipelineError("Verified evidence manifest does not bind the canonical private blind map")
     evidence_manifest_sha256 = sha256_file(evidence_manifest_path)
     if summary.get("evidence", {}).get("evidence_manifest_sha256") != evidence_manifest_sha256:
         raise PipelineError("Evaluation summary does not bind the canonical evidence manifest")
     expected_evidence = {
         "evaluation_summary_sha256": sha256_file(evaluation_summary_path),
         "evidence_manifest_sha256": evidence_manifest_sha256,
+        "blind_key_commitment": verified_evidence_manifest["blind_key_commitment"],
+        "blind_map_path": BLIND_MAP_RELATIVE_PATH,
+        "blind_map_sha256": verified_evidence_manifest["blind_map_sha256"],
         "holdout_manifest_sha256": sha256_file(holdout_manifest_path),
         "protocol_sha256": summary.get("protocol_sha256") or load_json(evaluation_summary_path).get("protocol_sha256"),
         "rubric_sha256": summary.get("rubric_sha256") or load_json(evaluation_summary_path).get("rubric_sha256"),
         "rollback_evidence_sha256": sha256_file(rollback_evidence_path),
         "config_sha256": sha256_json(config),
+        "lifecycle_executables_sha256": None,
     }
     # Protocol and rubric bindings may live in the frozen plan instead of the summary.
     plan_path = evaluation_summary_path.parent / "plan.json"
@@ -283,6 +306,9 @@ def validate_approval(
     expected_evidence["protocol_sha256"] = plan.get("protocol_sha256")
     expected_evidence["rubric_sha256"] = plan.get("rubric_sha256")
     expected_evidence["config_sha256"] = plan.get("config_sha256")
+    expected_evidence["lifecycle_executables_sha256"] = plan.get(
+        "lifecycle_executables_sha256"
+    )
     if evidence != expected_evidence:
         raise PipelineError("Approval evidence hashes do not match immutable run artifacts")
 
@@ -631,6 +657,7 @@ def validate_prepared_promotion(
 
 def push_and_open_pr(clean_root: Path, config: dict[str, Any]) -> dict[str, Any]:
     promotion = config["promotion"]
+    github_actor = verify_github_actor(config, cwd=clean_root)
     head_commit = run_command(["git", "rev-parse", "HEAD"], cwd=clean_root).stdout.strip()
     run_command(
         ["git", "push", "--set-upstream", promotion["remote"], promotion["feature_branch"]],
@@ -677,7 +704,12 @@ def push_and_open_pr(clean_root: Path, config: dict[str, Any]) -> dict[str, Any]
             cwd=clean_root,
         )
         pr_url = created.stdout.strip().splitlines()[-1]
-    return {"pr_url": pr_url, "head_commit": head_commit, "opened_at": iso_now()}
+    return {
+        "pr_url": pr_url,
+        "head_commit": head_commit,
+        "opened_at": iso_now(),
+        "github_actor": github_actor,
+    }
 
 
 def build_pr_record(
@@ -690,6 +722,8 @@ def build_pr_record(
 ) -> dict[str, Any]:
     if prepared.get("head_commit") != opened.get("head_commit"):
         raise PipelineError("Prepared commit and pull-request head differ")
+    if not isinstance(opened.get("github_actor"), str) or not opened["github_actor"].strip():
+        raise PipelineError("Pull-request result lacks the verified GitHub actor")
     return seal_record(
         {
             "schema_version": "2.0",
@@ -701,6 +735,7 @@ def build_pr_record(
             "staged_paths": sorted(prepared["staged_paths"]),
             "pr_url": opened["pr_url"],
             "opened_at": opened["opened_at"],
+            "github_actor": opened["github_actor"],
             "status": "pr-open",
         }
     )
@@ -710,6 +745,8 @@ def build_release_record(pr_record: dict[str, Any], merged: dict[str, Any]) -> d
     validate_sealed_record(pr_record, status="pr-open")
     if pr_record.get("head_commit") != merged.get("head_commit") or pr_record.get("pr_url") != merged.get("pr_url"):
         raise PipelineError("Merge result does not match immutable pull-request record")
+    if str(pr_record.get("github_actor", "")).casefold() != str(merged.get("github_actor", "")).casefold():
+        raise PipelineError("Merge credential differs from the pull-request automation actor")
     return seal_record(
         {
             "schema_version": "2.0",
@@ -723,6 +760,7 @@ def build_release_record(pr_record: dict[str, Any], merged: dict[str, Any]) -> d
             "merge_commit": merged["merge_commit"],
             "merged_at": merged["merged_at"],
             "github_evidence": merged["github_evidence"],
+            "github_actor": merged["github_actor"],
             "status": "merged",
         }
     )
@@ -780,6 +818,20 @@ def _reviewer_policy(
     return actor, allowed
 
 
+def verify_github_actor(config: dict[str, Any], *, cwd: Path | None = None) -> str:
+    """Resolve the active gh principal in the exact ambient credential context."""
+
+    configured, _ = _reviewer_policy(
+        config.get("promotion", {}).get("automation_actor"),
+        config.get("promotion", {}).get("required_reviewer_logins"),
+    )
+    result = run_command(["gh", "api", "user", "--jq", ".login"], cwd=cwd)
+    active = result.stdout.strip()
+    if not active or active.casefold() != configured:
+        raise PipelineError("Active GitHub credential does not match the frozen automation actor")
+    return active
+
+
 def _validated_pr_snapshot(
     snapshot: dict[str, Any],
     *,
@@ -807,7 +859,7 @@ def _validated_pr_snapshot(
     reviews = snapshot.get("reviews")
     if not isinstance(reviews, list):
         raise PipelineError("Pull request review evidence is malformed")
-    latest_reviews: dict[str, tuple[tuple[str, int], str, str]] = {}
+    latest_reviews: dict[str, tuple[tuple[str, int], str, str, str]] = {}
     for index, review in enumerate(reviews):
         if not isinstance(review, dict):
             raise PipelineError("Pull request review evidence is malformed")
@@ -816,15 +868,23 @@ def _validated_pr_snapshot(
             continue
         normalized = login.casefold()
         order = (str(review.get("submittedAt") or ""), index)
+        commit = review.get("commit")
+        review_commit = str(commit.get("oid") or "") if isinstance(commit, dict) else ""
         previous = latest_reviews.get(normalized)
         if previous is None or order >= previous[0]:
-            latest_reviews[normalized] = (order, login, str(review.get("state") or ""))
+            latest_reviews[normalized] = (
+                order,
+                login,
+                str(review.get("state") or ""),
+                review_commit,
+            )
     approved_reviewers = sorted(
         login
-        for normalized, (_, login, state) in latest_reviews.items()
+        for normalized, (_, login, state, review_commit) in latest_reviews.items()
         if normalized in allowed_reviewers
         and normalized not in excluded_reviewers
         and state == "APPROVED"
+        and review_commit == expected_head
     )
     if not approved_reviewers:
         raise PipelineError("Pull request lacks a current approval from an allowed independent reviewer")
@@ -861,6 +921,7 @@ def _validated_pr_snapshot(
 def merge_reviewed_pr(pr_url: str, expected_head: str, config: dict[str, Any]) -> dict[str, Any]:
     promotion = config["promotion"]
     slug = promotion["repository_slug"]
+    github_actor = verify_github_actor(config)
     fields = "state,headRefOid,baseRefName,reviewDecision,mergeStateStatus,url,mergeCommit,mergedAt,statusCheckRollup,reviews,author"
     before = json.loads(run_command(["gh", "pr", "view", pr_url, "--repo", slug, "--json", fields]).stdout)
     expected_state = "MERGED" if before.get("state") == "MERGED" else "OPEN"
@@ -883,11 +944,16 @@ def merge_reviewed_pr(pr_url: str, expected_head: str, config: dict[str, Any]) -
             "head_commit": expected_head,
             "merge_commit": merge_commit,
             "merged_at": merged_at,
-            "github_evidence": evidence,
+            "github_evidence": {**evidence, "github_actor": github_actor},
+            "github_actor": github_actor,
         }
     method = promotion.get("merge_method", "squash")
     if method not in {"merge", "squash", "rebase"}:
         raise PipelineError("Unsupported merge method")
+    merge_actor = verify_github_actor(config)
+    if merge_actor.casefold() != github_actor.casefold():
+        raise PipelineError("Active GitHub credential changed during merge verification")
+    github_actor = merge_actor
     run_command(["gh", "pr", "merge", pr_url, "--repo", slug, f"--{method}", "--match-head-commit", expected_head])
     after = json.loads(run_command(["gh", "pr", "view", pr_url, "--repo", slug, "--json", fields]).stdout)
     evidence = _validated_pr_snapshot(
@@ -908,7 +974,8 @@ def merge_reviewed_pr(pr_url: str, expected_head: str, config: dict[str, Any]) -
         "head_commit": expected_head,
         "merge_commit": merge_commit,
         "merged_at": merged_at,
-        "github_evidence": evidence,
+        "github_evidence": {**evidence, "github_actor": github_actor},
+        "github_actor": github_actor,
     }
 
 
@@ -1024,6 +1091,7 @@ def _stage_install_source(
     installer_root: Path,
     merge_commit: str,
     expected_hashes: dict[str, str],
+    run_dir: Path,
     config: dict[str, Any],
 ) -> None:
     """Stage either an explicit test copy or an exact-ref skill-installer download."""
@@ -1039,9 +1107,6 @@ def _stage_install_source(
         return
 
     installation = config["installation"]
-    script = Path(str(installation.get("installer_script", ""))).expanduser()
-    if not script.is_file() or script.is_symlink():
-        raise PipelineError("Configured production skill-installer helper is missing or unsafe")
     promotion = config.get("promotion", {})
     repository_slug = str(promotion.get("repository_slug", ""))
     skill_path = str(config.get("candidate", {}).get("skill_path", ""))
@@ -1050,9 +1115,10 @@ def _stage_install_source(
         raise PipelineError("Production installer lacks repository, skill path, or skill name")
 
     _clear_installer_workspace(skills_root, installer_root)
+    installer_binding = verify_lifecycle_executable_binding(run_dir, config, "installer")
     command = [
-        sys.executable,
-        str(script),
+        installer_binding["argv"][0],
+        installer_binding["argv"][1],
         "--repo",
         repository_slug,
         "--path",
@@ -1090,19 +1156,22 @@ def run_canary(installed_skill: Path, run_dir: Path, config: dict[str, Any]) -> 
     skill_text = skill_file.read_text(encoding="utf-8")
     if not skill_text.startswith("---\n") or "\nname: explore-approaches\n" not in skill_text or "\ndescription:" not in skill_text:
         raise PipelineError("Installed skill frontmatter is invalid")
-    validator_template = config["installation"].get("validator_argv", [])
-    if validator_template:
-        validation = run_command([str(part).replace("{skill}", str(installed_skill)) for part in validator_template], check=False)
-        if validation.returncode != 0:
-            raise PipelineError(f"Installed skill failed static validation: {validation.stderr or validation.stdout}")
+    validator_binding = verify_lifecycle_executable_binding(run_dir, config, "validator")
+    validation = run_command(
+        [str(part).replace("{skill}", str(installed_skill)) for part in validator_binding["argv"]],
+        check=False,
+    )
+    if validation.returncode != 0:
+        raise PipelineError(f"Installed skill failed static validation: {validation.stderr or validation.stdout}")
     request = {
         "schema_version": "1.0",
         "adapter_kind": "canary",
         "installed_skill": str(installed_skill),
         "request": "Recommend approaches for a reversible workspace decision; do not implement any option.",
     }
+    canary_binding = verify_lifecycle_executable_binding(run_dir, config, "canary")
     result = invoke_adapter(
-        config["evaluation"]["canary_adapter_argv"],
+        canary_binding["argv"],
         request,
         run_dir / "canary-attempts",
         timeout_seconds=float(config["evaluation"]["timeout_ms"]) / 1000,
@@ -1136,6 +1205,20 @@ def _path_present(path: Path) -> bool:
     """Treat broken symlinks as present without following them."""
 
     return path.exists() or path.is_symlink()
+
+
+def _best_effort_path_evidence(path: Path) -> tuple[dict[str, str] | None, str]:
+    """Describe a quarantined entry without allowing malformed content to block rollback."""
+
+    if not _path_present(path):
+        return None, "absent"
+    try:
+        hashes = _path_hashes(path)
+    except Exception as exc:
+        return None, f"unavailable ({type(exc).__name__}: {exc})"
+    if hashes is None:
+        return None, "absent"
+    return hashes, f"regular-tree sha256={sha256_json(hashes)} files={len(hashes)}"
 
 
 def validate_installation_receipt(
@@ -1185,7 +1268,7 @@ def atomic_install(
     quarantine_root = Path(installation["quarantine_directory"]).expanduser()
     backup_root.mkdir(parents=True, exist_ok=True)
     quarantine_root.mkdir(parents=True, exist_ok=True)
-    run_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(run_dir, create=True, normalize=not run_dir.exists())
     if run_dir.is_symlink() or skills_root.is_symlink() or backup_root.is_symlink() or quarantine_root.is_symlink():
         raise PipelineError("Install control directories may not be symlinks")
     if skills_root.stat().st_dev != backup_root.stat().st_dev or skills_root.stat().st_dev != quarantine_root.stat().st_dev:
@@ -1251,7 +1334,15 @@ def atomic_install(
                 }
             )
             _durable_write_json(intent_path, intent)
-            _stage_install_source(source, staging, installer_root, merge_commit, hashes, config)
+            _stage_install_source(
+                source,
+                staging,
+                installer_root,
+                merge_commit,
+                hashes,
+                run_dir,
+                config,
+            )
             if _path_hashes(staging) != hashes:
                 raise PipelineError("Staged skill differs from immutable merged source")
             intent = _write_install_intent(intent_path, intent, "staged")
@@ -1259,8 +1350,7 @@ def atomic_install(
         previous_existed = bool(intent["previous_existed"])
         previous_hashes = intent["previous_file_hashes"]
         if intent.get("phase") == "rolled-back" or _path_present(quarantine):
-            if _path_present(quarantine) and quarantine.is_dir() and not quarantine.is_symlink():
-                _tree_hashes(quarantine)
+            _, quarantine_evidence = _best_effort_path_evidence(quarantine)
             destination_hashes = _path_hashes(destination)
             backup_hashes = _path_hashes(backup)
             if previous_existed:
@@ -1293,8 +1383,11 @@ def atomic_install(
                         "merge_commit": merge_commit,
                         "destination": str(destination),
                         "restored_previous": previous_existed,
-                        "quarantine": str(quarantine) if quarantine.exists() else None,
-                        "reason": "Recovered an interrupted rollback from durable intent and filesystem hashes",
+                        "quarantine": str(quarantine) if _path_present(quarantine) else None,
+                        "reason": (
+                            "Recovered an interrupted rollback from durable intent and filesystem hashes; "
+                            f"quarantine evidence: {quarantine_evidence}"
+                        ),
                         "status": "rolled-back",
                     }
                 )
@@ -1309,7 +1402,7 @@ def atomic_install(
                 if staging_hashes != hashes:
                     if staging.exists():
                         shutil.rmtree(staging)
-                    _stage_install_source(source, staging, installer_root, merge_commit, hashes, config)
+                    _stage_install_source(source, staging, installer_root, merge_commit, hashes, run_dir, config)
                     staging_hashes = _path_hashes(staging)
                 if staging_hashes != hashes:
                     raise PipelineError("Staging tree differs from immutable candidate")
@@ -1340,49 +1433,49 @@ def atomic_install(
         except Exception as exc:
             try:
                 destination_present = _path_present(destination)
-                destination_hashes = (
-                    _tree_hashes(destination)
-                    if destination_present and destination.is_dir() and not destination.is_symlink()
-                    else None
-                )
-                backup_hashes = _path_hashes(backup)
-                previous_is_active = (
-                    previous_existed
-                    and destination_present
-                    and destination_hashes == previous_hashes
-                    and backup_hashes is None
-                )
-                if destination_present and not previous_is_active:
+                quarantined_hashes: dict[str, str] | None = None
+                quarantine_evidence = "destination absent"
+                if destination_present:
                     if _path_present(quarantine):
                         raise PipelineError(
                             "Cannot quarantine failed active tree: transaction quarantine already exists"
                         )
-                    failed_hashes = destination_hashes
+                    # Recheck only the managed parents. The leaf may now contain a
+                    # symlink or another malformed entry created by the failed canary;
+                    # os.replace moves that entry itself and never follows it.
+                    _assert_safe_descendant(skills_root, destination.parent, allow_missing_leaf=False)
+                    _assert_safe_descendant(quarantine_root, quarantine.parent, allow_missing_leaf=False)
                     os.replace(destination, quarantine)
                     _fsync_directory(skills_root)
                     _fsync_directory(quarantine_root)
                     if _path_present(destination) or not _path_present(quarantine):
                         raise PipelineError("Failed active tree was not durably quarantined")
-                    if failed_hashes is not None and _path_hashes(quarantine) != failed_hashes:
-                        raise PipelineError("Quarantined failed tree differs from its pre-move state")
+                    quarantined_hashes, quarantine_evidence = _best_effort_path_evidence(quarantine)
 
                 if previous_existed:
-                    destination_hashes = _path_hashes(destination)
                     backup_hashes = _path_hashes(backup)
-                    if destination_hashes == previous_hashes and backup_hashes is None:
-                        pass
-                    elif destination_hashes is None and backup_hashes == previous_hashes:
+                    if backup_hashes == previous_hashes:
                         os.replace(backup, destination)
                         _fsync_directory(backup_root)
                         _fsync_directory(skills_root)
+                    elif backup_hashes is None and quarantined_hashes == previous_hashes:
+                        os.replace(quarantine, destination)
+                        _fsync_directory(quarantine_root)
+                        _fsync_directory(skills_root)
+                        quarantine_evidence = (
+                            f"restored recorded previous tree from quarantine; {quarantine_evidence}"
+                        )
                     else:
                         raise PipelineError(
                             "Cannot restore previous installation from the recorded backup"
                         )
-                    if _path_hashes(destination) != previous_hashes or _path_hashes(backup) is not None:
+                    if _path_hashes(destination) != previous_hashes or _path_present(backup):
                         raise PipelineError("Restored installation differs from the pre-install tree")
-                elif _path_hashes(destination) is not None:
+                elif _path_present(destination):
                     raise PipelineError("Failed installation left an unexpected active destination")
+
+                if destination_present and quarantined_hashes != previous_hashes and not _path_present(quarantine):
+                    raise PipelineError("Failed active tree disappeared instead of remaining quarantined")
 
                 intent = _write_install_intent(intent_path, intent, "rolled-back")
                 rollback = seal_record(
@@ -1395,7 +1488,7 @@ def atomic_install(
                         "destination": str(destination),
                         "restored_previous": previous_existed,
                         "quarantine": str(quarantine) if _path_present(quarantine) else None,
-                        "reason": str(exc),
+                        "reason": f"{exc}; quarantined tree evidence: {quarantine_evidence}",
                         "status": "rolled-back",
                     }
                 )
@@ -1447,7 +1540,7 @@ def atomic_install(
 
 
 def rehearse_rollback(run_dir: Path) -> dict[str, Any]:
-    run_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(run_dir, create=True, normalize=not run_dir.exists())
     with tempfile.TemporaryDirectory(prefix="explore-rollback-") as temporary:
         root = Path(temporary)
         checkout = root / "checkout" / "skills" / "explore-approaches"

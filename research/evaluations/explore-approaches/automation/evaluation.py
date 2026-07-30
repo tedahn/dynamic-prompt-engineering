@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import math
 import os
 import random
 import re
+import secrets
 import shutil
+import stat
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -23,6 +28,8 @@ from .core import (
     atomic_write_json,
     build_candidate_manifest,
     canonical_json_bytes,
+    ensure_private_directory,
+    ensure_private_file,
     require_outside,
     iso_now,
     load_json,
@@ -44,6 +51,146 @@ MINIMAL_ADVICE = (
     "Inspect relevant workspace context. Suggest materially different approaches, compare "
     "tradeoffs, recommend one, and do not implement it.\n\nRequest:\n"
 )
+
+BLIND_KEY_BYTES = 32
+BLIND_KEY_MODE = 0o600
+PRIVATE_GRADING_MODE = 0o700
+BLIND_MAP_RELATIVE_PATH = "private/grading/blind-map.jsonl"
+
+
+def _private_grading_dir(run_dir: Path, *, create: bool = True) -> Path:
+    private_root = run_dir / "private"
+    grading_root = private_root / "grading"
+    for path in (private_root, grading_root):
+        if path.is_symlink():
+            raise PipelineError(f"Private grading path may not be a symlink: {path}")
+        if path.exists():
+            if not path.is_dir():
+                raise PipelineError(f"Private grading path is not a directory: {path}")
+        else:
+            if not create:
+                raise PipelineError(f"Private grading directory is missing: {path}")
+            path.mkdir(mode=PRIVATE_GRADING_MODE)
+            path.chmod(PRIVATE_GRADING_MODE)
+        metadata = path.stat(follow_symlinks=False)
+        if stat.S_IMODE(metadata.st_mode) != PRIVATE_GRADING_MODE:
+            raise PipelineError(f"Private grading directory permissions must be 0700: {path}")
+        if hasattr(os, "geteuid") and metadata.st_uid != os.geteuid():
+            raise PipelineError(f"Private grading directory has another owner: {path}")
+    return grading_root
+
+
+def _private_grading_path(run_dir: Path, name: str, *, create: bool = True) -> Path:
+    if not name or "/" in name or "\\" in name or name in {".", ".."}:
+        raise PipelineError("Private grading filename is unsafe")
+    return _private_grading_dir(run_dir, create=create) / name
+
+
+def _read_private_file(path: Path, *, expected_bytes: int | None, label: str) -> bytes:
+    try:
+        before = path.lstat()
+    except (FileNotFoundError, OSError) as exc:
+        raise PipelineError(f"Private {label} is missing or unsafe: {path}") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise PipelineError(f"Private {label} is missing or unsafe: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except (FileNotFoundError, OSError) as exc:
+        raise PipelineError(f"Private {label} is missing or unsafe: {path}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        try:
+            after = path.lstat()
+        except (FileNotFoundError, OSError) as exc:
+            raise PipelineError(f"Private {label} changed while it was opened: {path}") from exc
+        identity = (metadata.st_dev, metadata.st_ino)
+        if identity != (before.st_dev, before.st_ino) or identity != (after.st_dev, after.st_ino):
+            raise PipelineError(f"Private {label} changed while it was opened: {path}")
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != BLIND_KEY_MODE:
+            raise PipelineError(f"Private {label} permissions must be 0600: {path}")
+        if hasattr(os, "geteuid") and metadata.st_uid != os.geteuid():
+            raise PipelineError(f"Private {label} has another owner: {path}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 64 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        content = b"".join(chunks)
+    finally:
+        os.close(descriptor)
+    if expected_bytes is not None and len(content) != expected_bytes:
+        raise PipelineError(f"Private {label} has an invalid length")
+    return content
+
+
+def _fsync_private_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_create_private_file(path: Path, content: bytes, label: str) -> None:
+    directory = path.parent
+    temporary = directory / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(temporary, flags, BLIND_KEY_MODE)
+    try:
+        os.fchmod(descriptor, BLIND_KEY_MODE)
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise PipelineError(f"Could not write private {label}")
+            view = view[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            pass
+        _fsync_private_directory(directory)
+    finally:
+        if temporary.exists() or temporary.is_symlink():
+            temporary.unlink()
+
+
+def _persist_private_exact_bytes(path: Path, expected: bytes, label: str) -> None:
+    _private_grading_dir(path.parents[2])
+    if path.exists() or path.is_symlink():
+        if _read_private_file(path, expected_bytes=None, label=label) != expected:
+            raise PipelineError(f"Existing private {label} does not match deterministic reconstruction")
+        return
+    _atomic_create_private_file(path, expected, label)
+    if _read_private_file(path, expected_bytes=None, label=label) != expected:
+        raise PipelineError(f"Private {label} changed while it was persisted")
+
+
+def _load_or_create_blind_key(run_dir: Path) -> bytes:
+    path = _private_grading_path(run_dir, "blind-key.bin")
+    if not path.exists() and not path.is_symlink():
+        _atomic_create_private_file(path, secrets.token_bytes(BLIND_KEY_BYTES), "blind key")
+    return _read_private_file(path, expected_bytes=BLIND_KEY_BYTES, label="blind key")
+
+
+def verify_blind_key_commitment(run_dir: Path, expected: str) -> str:
+    if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+        raise PipelineError("Blind key commitment is malformed")
+    key = _read_private_file(
+        _private_grading_path(run_dir, "blind-key.bin", create=False),
+        expected_bytes=BLIND_KEY_BYTES,
+        label="blind key",
+    )
+    actual = sha256_bytes(key)
+    if not hmac.compare_digest(actual, expected):
+        raise PipelineError("Blind key does not match the frozen commitment")
+    return actual
 
 
 def _runtime_artifact_descriptor(value: str) -> dict[str, Any]:
@@ -78,6 +225,127 @@ def _runtime_artifact_descriptor(value: str) -> dict[str, Any]:
     }
 
 
+def _safe_command_file(value: str, label: str, *, search_path: bool = False) -> dict[str, Any]:
+    configured = str(value).strip()
+    if not configured:
+        raise PipelineError(f"{label} path is not configured")
+    located = shutil.which(configured) if search_path else None
+    path = Path(located or configured).expanduser()
+    if not path.is_absolute():
+        raise PipelineError(f"{label} must resolve to an absolute path: {configured}")
+    if path.is_symlink() or not path.is_file():
+        raise PipelineError(f"{label} must be a regular non-symlink file: {path}")
+    resolved = path.resolve(strict=True)
+    if resolved.is_symlink() or not resolved.is_file():
+        raise PipelineError(f"{label} resolved target is unsafe: {resolved}")
+    metadata = resolved.stat(follow_symlinks=False)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise PipelineError(f"{label} resolved target is not a regular file: {resolved}")
+    return {
+        "path": str(resolved),
+        "sha256": sha256_file(resolved),
+        "size": metadata.st_size,
+    }
+
+
+def _command_binding(
+    label: str,
+    template: Any,
+    *,
+    required_artifacts: Sequence[str] = (),
+) -> dict[str, Any]:
+    if (
+        not isinstance(template, list)
+        or not template
+        or any(not isinstance(value, str) or not value for value in template)
+    ):
+        raise PipelineError(f"{label} argv is not configured")
+    executable = _safe_command_file(template[0], f"{label} executable", search_path=True)
+    artifacts: dict[str, dict[str, Any]] = {executable["path"]: executable}
+    for index, value in enumerate(template[1:], 1):
+        if "{" in value or value.startswith("-"):
+            continue
+        candidate = Path(value).expanduser()
+        if candidate.is_absolute() or value.startswith(("./", "../")):
+            if not candidate.is_absolute():
+                raise PipelineError(f"{label} argv artifact must be absolute: {value}")
+            descriptor = _safe_command_file(value, f"{label} argv[{index}]")
+            artifacts[descriptor["path"]] = descriptor
+    for value in required_artifacts:
+        descriptor = _safe_command_file(value, f"{label} required artifact")
+        artifacts[descriptor["path"]] = descriptor
+    resolved_argv = [executable["path"], *template[1:]]
+    body = {
+        "label": label,
+        "argv": resolved_argv,
+        "argv_sha256": sha256_json(resolved_argv),
+        "executable": executable,
+        "artifacts": [artifacts[path] for path in sorted(artifacts)],
+    }
+    return {**body, "sha256": sha256_json(body)}
+
+
+def lifecycle_executable_bindings(config: dict[str, Any]) -> dict[str, Any]:
+    """Resolve all activation-time code before private holdout contents are read."""
+
+    evaluation = config.get("evaluation", {})
+    installation = config.get("installation", {})
+    source_mode = installation.get("source_mode")
+    if source_mode is None and installation.get("installer_script"):
+        source_mode = "installer"
+    if source_mode not in {"installer", "local-test"}:
+        raise PipelineError("Installation source_mode must be installer or explicit local-test")
+    commands: dict[str, dict[str, Any]] = {
+        "validator": _command_binding(
+            "validator", installation.get("validator_argv")
+        ),
+        "canary": _command_binding(
+            "canary", evaluation.get("canary_adapter_argv")
+        ),
+    }
+    if source_mode == "installer":
+        helper = str(installation.get("installer_script", ""))
+        commands["installer"] = _command_binding(
+            "installer",
+            [str(Path(sys.executable).resolve()), str(Path(helper).expanduser())],
+            required_artifacts=(helper,),
+        )
+    body = {
+        "schema_version": "1.0",
+        "source_mode": source_mode,
+        "commands": {name: commands[name] for name in sorted(commands)},
+    }
+    return {**body, "sha256": sha256_json(body)}
+
+
+def verify_lifecycle_executable_binding(
+    run_dir: Path,
+    config: dict[str, Any],
+    command: str,
+) -> dict[str, Any]:
+    """Rehash a frozen command immediately before its authority-bearing invocation."""
+
+    ensure_private_directory(run_dir)
+    ensure_private_file(run_dir / "plan.json")
+    plan = load_json(run_dir / "plan.json")
+    frozen_path = run_dir / "frozen" / "lifecycle-executables.json"
+    if not frozen_path.is_file() or frozen_path.is_symlink():
+        raise PipelineError("Frozen lifecycle executable bindings are missing or unsafe")
+    ensure_private_file(frozen_path)
+    frozen = load_json(frozen_path)
+    if frozen.get("sha256") != sha256_json({key: value for key, value in frozen.items() if key != "sha256"}):
+        raise PipelineError("Frozen lifecycle executable binding hash mismatch")
+    if plan.get("lifecycle_executables_sha256") != frozen.get("sha256"):
+        raise PipelineError("Frozen plan does not bind the lifecycle executables")
+    current = lifecycle_executable_bindings(config)
+    if current != frozen:
+        raise PipelineError("Lifecycle executable path, argv, or content changed after freeze")
+    binding = frozen.get("commands", {}).get(command)
+    if not isinstance(binding, dict):
+        raise PipelineError(f"Frozen lifecycle command is unavailable: {command}")
+    return binding
+
+
 def _subject_runtime_identity(config: dict[str, Any]) -> dict[str, Any]:
     evaluation = config["evaluation"]
     configured = evaluation.get("subject_runtime")
@@ -93,22 +361,28 @@ def _subject_runtime_identity(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(argv, list) or not argv or any(not isinstance(value, str) or not value for value in argv):
         raise PipelineError("Subject adapter argv is not configured")
 
-    configured_paths = configured.get("artifact_paths", [])
-    if not isinstance(configured_paths, list) or any(
-        not isinstance(value, str) or not value.strip() for value in configured_paths
+    if "image_digest" in configured or "artifact_paths" in configured:
+        raise PipelineError(
+            "Declarative image_digest or ambiguous artifact_paths provenance is unsupported"
+        )
+    entrypoint_value = configured.get("entrypoint_path")
+    if not isinstance(entrypoint_value, str) or not entrypoint_value.strip():
+        raise PipelineError("Subject runtime entrypoint_path must be configured")
+    entrypoint_path = Path(entrypoint_value).expanduser()
+    if not entrypoint_path.is_absolute() or entrypoint_path.is_symlink() or not entrypoint_path.is_file():
+        raise PipelineError("Subject runtime entrypoint_path must be an absolute regular non-symlink file")
+    entrypoint_path = entrypoint_path.resolve()
+    entrypoint = _runtime_artifact_descriptor(str(entrypoint_path))
+
+    dependency_values = configured.get("dependency_paths", [])
+    if not isinstance(dependency_values, list) or any(
+        not isinstance(value, str) or not value.strip() for value in dependency_values
     ):
-        raise PipelineError("Subject runtime artifact_paths must be an array of absolute paths")
-    image_digest = configured.get("image_digest") or None
-    if image_digest is not None and (
-        not isinstance(image_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None
-    ):
-        raise PipelineError("Subject runtime image_digest must be an immutable sha256 digest")
-    if not configured_paths and image_digest is None:
-        raise PipelineError("Subject runtime must declare artifact_paths or an immutable image_digest")
-    artifact_paths = [_runtime_artifact_descriptor(value) for value in configured_paths]
-    resolved_paths = [entry["path"] for entry in artifact_paths]
-    if len(resolved_paths) != len(set(resolved_paths)):
-        raise PipelineError("Subject runtime artifact_paths contain duplicate resolved paths")
+        raise PipelineError("Subject runtime dependency_paths must be an array of absolute paths")
+    declared_artifacts = [entrypoint] + [_runtime_artifact_descriptor(value) for value in dependency_values]
+    declared_paths = [entry["path"] for entry in declared_artifacts]
+    if len(declared_paths) != len(set(declared_paths)):
+        raise PipelineError("Subject runtime entrypoint and dependency paths must resolve uniquely")
 
     executable = shutil.which(argv[0]) or argv[0]
     executable_path = Path(executable).expanduser()
@@ -117,22 +391,42 @@ def _subject_runtime_identity(config: dict[str, Any]) -> dict[str, Any]:
     executable_path = executable_path.resolve()
     if not executable_path.is_file() or executable_path.is_symlink():
         raise PipelineError(f"Subject adapter executable target is unavailable or unsafe: {argv[0]}")
-    argv_files: list[dict[str, str]] = [{"path": str(executable_path), "sha256": sha256_file(executable_path)}]
+    executable_artifact = _runtime_artifact_descriptor(str(executable_path))
+    forbidden_interpreter_flags = {
+        "-m",
+        "--module",
+        "-c",
+        "--command",
+        "-e",
+        "--eval",
+        "-command",
+        "-encodedcommand",
+        "--encoded-command",
+    }
+    if any(value.casefold() in forbidden_interpreter_flags for value in argv[1:]):
+        raise PipelineError("Subject runtime module or inline interpreter execution is not independently provenance-bound")
+    argv_file_paths: list[Path] = []
     for value in argv[1:]:
         if "{input}" in value or "{output}" in value or value.startswith("-"):
             continue
         expanded = Path(value).expanduser()
         if expanded.is_absolute() or value.startswith("./") or value.startswith("../"):
+            if not expanded.is_absolute():
+                raise PipelineError(f"Subject adapter argv file must be absolute: {value}")
             if not expanded.is_file() or expanded.is_symlink():
                 raise PipelineError(f"Subject adapter argv artifact is unavailable or unsafe: {value}")
-            resolved = expanded.resolve()
-            argv_files.append({"path": str(resolved), "sha256": sha256_file(resolved)})
-            if image_digest is None and not any(
-                resolved == Path(root).resolve() or Path(root).resolve() in resolved.parents for root in resolved_paths
-            ):
-                raise PipelineError(f"Subject adapter argv artifact is not explicitly declared: {resolved}")
+            argv_file_paths.append(expanded.resolve())
+    if entrypoint_path != executable_path and entrypoint_path not in argv_file_paths:
+        raise PipelineError(
+            "Subject runtime entrypoint_path must be the resolved executable or a concrete absolute argv file"
+        )
+    artifact_by_path = {entry["path"]: entry for entry in declared_artifacts}
+    for path in argv_file_paths:
+        artifact_by_path.setdefault(str(path), _runtime_artifact_descriptor(str(path)))
+    if str(entrypoint_path) not in artifact_by_path:
+        raise PipelineError("Subject runtime entrypoint is absent from the hashed artifact set")
     body = {
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "adapter_id": configured["adapter_id"],
         "provider_id": configured["provider_id"],
         "model_id": configured["model_id"],
@@ -140,9 +434,9 @@ def _subject_runtime_identity(config: dict[str, Any]) -> dict[str, Any]:
         "settings_sha256": sha256_json(settings),
         "argv": argv,
         "argv_sha256": sha256_json(argv),
-        "argv_files": argv_files,
-        "artifact_paths": artifact_paths,
-        "image_digest": image_digest,
+        "executable": executable_artifact,
+        "entrypoint": entrypoint,
+        "artifacts": [artifact_by_path[path] for path in sorted(artifact_by_path)],
     }
     return {**body, "sha256": sha256_json(body)}
 
@@ -183,14 +477,29 @@ def _jsonl_bytes(rows: Iterable[dict[str, Any]]) -> bytes:
 
 
 def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    new_parent = not path.parent.exists() and not path.parent.is_symlink()
+    ensure_private_directory(path.parent, create=True, normalize=new_parent)
+    if path.exists() or path.is_symlink():
+        ensure_private_file(path, normalize=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
     try:
-        with temporary.open("xb") as handle:
+        os.fchmod(descriptor, 0o600)
+        handle = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        with handle:
             handle.write(_jsonl_bytes(rows))
             handle.flush()
-        temporary.replace(path)
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        ensure_private_file(path)
     finally:
+        if descriptor >= 0:
+            os.close(descriptor)
         if temporary.exists():
             temporary.unlink()
 
@@ -313,6 +622,7 @@ def build_holdout_manifest_template(
     config: dict[str, Any],
     candidate_manifest: dict[str, Any],
     *,
+    run_dir: Path,
     manifest_id: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
@@ -323,6 +633,11 @@ def build_holdout_manifest_template(
     namespace = str(settings.get("namespace", ""))
     if not identity or not namespace:
         raise PipelineError("Holdout signer identity and namespace must be configured before templating")
+    require_outside(run_dir, repo_root, "Evaluation run directory")
+    new_run_directory = not run_dir.exists() and not run_dir.is_symlink()
+    ensure_private_directory(run_dir, create=True, normalize=new_run_directory)
+    lifecycle_executables = lifecycle_executable_bindings(config)
+    blind_key_commitment = sha256_bytes(_load_or_create_blind_key(run_dir))
     evaluation = config["evaluation"]
     rows = validate_holdout(
         repo_root,
@@ -359,7 +674,9 @@ def build_holdout_manifest_template(
         "rubric_content_sha256": sha256_json(rubric),
         "arm_materials_sha256": arm_materials["sha256"],
         "subject_runtime_sha256": subject_runtime["sha256"],
+        "lifecycle_executables_sha256": lifecycle_executables["sha256"],
         "plan_design_sha256": plan_design["sha256"],
+        "blind_key_commitment": blind_key_commitment,
         "signature": {
             "algorithm": "ssh-keygen-y",
             "identity": identity,
@@ -411,6 +728,54 @@ def verify_holdout_ssh_signature(manifest: dict[str, Any], config: dict[str, Any
         raise PipelineError(f"SSH holdout signature verification failed: {result.stderr.strip()}")
 
 
+def human_review_payload(review: dict[str, Any]) -> bytes:
+    return canonical_json_bytes({key: value for key, value in review.items() if key != "signature"})
+
+
+def verify_human_review_ssh_signature(review: dict[str, Any], config: dict[str, Any]) -> None:
+    """Bind the claimed reviewer to a configured, cryptographically verified identity."""
+
+    settings = config.get("human_review_verification", {})
+    allowed_signers = Path(str(settings.get("allowed_signers_path", "")))
+    expected_identity = str(settings.get("expected_identity", ""))
+    namespace = str(settings.get("namespace", ""))
+    signature = review.get("signature", {})
+    if not expected_identity or not namespace or not allowed_signers.is_file() or allowed_signers.is_symlink():
+        raise PipelineError("SSH human-review verification is not fully configured")
+    if review.get("reviewer") != expected_identity:
+        raise PipelineError("Human-review attribution does not match the configured reviewer identity")
+    if signature.get("algorithm") != "ssh-keygen-y":
+        raise PipelineError("Human-review signature algorithm is unsupported")
+    if signature.get("identity") != expected_identity or signature.get("namespace") != namespace:
+        raise PipelineError("Human-review signer identity or namespace does not match configuration")
+    try:
+        decoded = base64.b64decode(signature.get("value", ""), validate=True)
+    except (ValueError, TypeError) as exc:
+        raise PipelineError("Human-review signature is not valid base64") from exc
+    with tempfile.TemporaryDirectory(prefix="explore-human-review-") as temporary:
+        signature_path = Path(temporary) / "review.sig"
+        signature_path.write_bytes(decoded)
+        result = run_command(
+            [
+                "ssh-keygen",
+                "-Y",
+                "verify",
+                "-f",
+                str(allowed_signers),
+                "-I",
+                expected_identity,
+                "-n",
+                namespace,
+                "-s",
+                str(signature_path),
+            ],
+            input_text=human_review_payload(review).decode("utf-8"),
+            check=False,
+        )
+    if result.returncode != 0:
+        raise PipelineError(f"SSH human-review signature verification failed: {result.stderr.strip()}")
+
+
 def _validate_external_holdout_manifest(
     repo_root: Path,
     holdout_path: Path,
@@ -421,6 +786,8 @@ def _validate_external_holdout_manifest(
     rubric: dict[str, Any],
     arm_materials: dict[str, Any],
     subject_runtime: dict[str, Any],
+    lifecycle_executables: dict[str, Any],
+    blind_key_commitment: str,
     *,
     signature_verifier: Callable[[dict[str, Any], dict[str, Any]], None],
 ) -> dict[str, Any]:
@@ -445,7 +812,9 @@ def _validate_external_holdout_manifest(
         "rubric_content_sha256",
         "arm_materials_sha256",
         "subject_runtime_sha256",
+        "lifecycle_executables_sha256",
         "plan_design_sha256",
+        "blind_key_commitment",
         "signature",
     }
     if set(manifest) != required:
@@ -473,7 +842,9 @@ def _validate_external_holdout_manifest(
         "rubric_content_sha256": sha256_json(rubric),
         "arm_materials_sha256": arm_materials["sha256"],
         "subject_runtime_sha256": subject_runtime["sha256"],
+        "lifecycle_executables_sha256": lifecycle_executables["sha256"],
         "plan_design_sha256": _plan_design(rows, config["evaluation"])["sha256"],
+        "blind_key_commitment": blind_key_commitment,
     }
     for key, expected_value in expected.items():
         if manifest.get(key) != expected_value:
@@ -486,6 +857,7 @@ def _copy_exact(source: Path, destination: Path) -> None:
     """Atomically copy an already verified file without reserializing it."""
 
     if destination.exists() or destination.is_symlink():
+        ensure_private_file(destination)
         if (
             not destination.is_file()
             or destination.is_symlink()
@@ -493,11 +865,13 @@ def _copy_exact(source: Path, destination: Path) -> None:
         ):
             raise PipelineError(f"Existing frozen file differs from verified input: {destination}")
         return
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(destination.parent, create=True, normalize=not destination.parent.exists())
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     try:
         shutil.copyfile(source, temporary)
+        ensure_private_file(temporary, normalize=True)
         temporary.replace(destination)
+        ensure_private_file(destination)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -505,6 +879,7 @@ def _copy_exact(source: Path, destination: Path) -> None:
 
 def _persist_frozen_json(path: Path, value: dict[str, Any], label: str) -> None:
     if path.exists() or path.is_symlink():
+        ensure_private_file(path)
         if not path.is_file() or path.is_symlink() or load_json(path) != value:
             raise PipelineError(f"Existing {label} does not match the input being frozen")
         return
@@ -523,9 +898,10 @@ def freeze_plan(
     signature_verifier: Callable[[dict[str, Any], dict[str, Any]], None] = verify_holdout_ssh_signature,
 ) -> dict[str, Any]:
     require_outside(run_dir, repo_root, "Evaluation run directory")
-    run_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(run_dir, create=True, normalize=not run_dir.exists())
     if (run_dir / "plan.json").exists():
         raise PipelineError("Run directory already contains a frozen plan")
+    lifecycle_executables = lifecycle_executable_bindings(config)
     frozen_holdout_manifest_path = run_dir / "holdout-manifest.json"
     candidate_manifest_sha256 = _candidate_manifest_digest(candidate_manifest)
     evaluation = config["evaluation"]
@@ -548,6 +924,13 @@ def freeze_plan(
     arm_materials = _build_arm_materials(repo_root, config)
     subject_runtime = _subject_runtime_identity(config)
     rubric = load_json(rubric_path)
+    blind_key_commitment = sha256_bytes(
+        _read_private_file(
+            _private_grading_path(run_dir, "blind-key.bin", create=False),
+            expected_bytes=BLIND_KEY_BYTES,
+            label="blind key",
+        )
+    )
     holdout_manifest = _validate_external_holdout_manifest(
         repo_root,
         holdout_path,
@@ -558,6 +941,8 @@ def freeze_plan(
         rubric,
         arm_materials,
         subject_runtime,
+        lifecycle_executables,
+        blind_key_commitment,
         signature_verifier=signature_verifier,
     )
     holdout_manifest_sha256 = sha256_file(holdout_manifest_path)
@@ -565,6 +950,7 @@ def freeze_plan(
     _persist_frozen_json(run_dir / "frozen" / "config.json", config, "pipeline configuration")
     atomic_write_json(run_dir / "frozen" / "arm-materials.json", arm_materials)
     atomic_write_json(run_dir / "frozen" / "subject-runtime.json", subject_runtime)
+    atomic_write_json(run_dir / "frozen" / "lifecycle-executables.json", lifecycle_executables)
     atomic_write_json(run_dir / "frozen" / "rubric.json", rubric)
     plan = {
         "schema_version": "1.0",
@@ -585,7 +971,9 @@ def freeze_plan(
         "holdout_manifest_sha256": holdout_manifest_sha256,
         "arm_materials_sha256": arm_materials["sha256"],
         "subject_runtime_sha256": subject_runtime["sha256"],
+        "lifecycle_executables_sha256": lifecycle_executables["sha256"],
         "plan_design_sha256": plan_design["sha256"],
+        "blind_key_commitment": holdout_manifest["blind_key_commitment"],
         "trials_per_task": int(evaluation["trials_per_task"]),
         "arms": list(arms),
         "cells": cells,
@@ -604,24 +992,31 @@ def freeze_plan(
 
 
 def _verified_plan(run_dir: Path, config: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    plan = load_json(run_dir / "plan.json")
+    ensure_private_directory(run_dir)
+    plan_path = run_dir / "plan.json"
+    ensure_private_file(plan_path)
+    plan = load_json(plan_path)
     if plan.get("plan_sha256") != sha256_json({key: value for key, value in plan.items() if key != "plan_sha256"}):
         raise PipelineError("Frozen plan hash mismatch")
     if plan.get("config_sha256") != sha256_json(config):
         raise PipelineError("Pipeline configuration or thresholds changed after freeze")
     frozen_config_path = run_dir / "frozen" / "config.json"
+    ensure_private_directory(frozen_config_path.parent)
     if not frozen_config_path.is_file() or frozen_config_path.is_symlink():
         raise PipelineError("Frozen pipeline configuration is missing or unsafe")
+    ensure_private_file(frozen_config_path)
     frozen_config = load_json(frozen_config_path)
     if sha256_json(frozen_config) != plan.get("config_sha256") or frozen_config != config:
         raise PipelineError("Frozen pipeline configuration changed after freeze")
     candidate_manifest_path = run_dir / "candidate-manifest.json"
     if not candidate_manifest_path.is_file() or candidate_manifest_path.is_symlink():
         raise PipelineError("Frozen candidate manifest is missing or unsafe")
+    ensure_private_file(candidate_manifest_path)
     candidate_manifest = load_json(candidate_manifest_path)
     if _candidate_manifest_digest(candidate_manifest) != plan.get("candidate_manifest_sha256"):
         raise PipelineError("Frozen candidate manifest changed after freeze")
     holdout_manifest_path = run_dir / "holdout-manifest.json"
+    ensure_private_file(holdout_manifest_path)
     if sha256_file(holdout_manifest_path) != plan.get("holdout_manifest_sha256"):
         raise PipelineError("Signed holdout manifest changed after freeze")
     holdout_manifest = load_json(holdout_manifest_path)
@@ -636,18 +1031,23 @@ def _verified_plan(run_dir: Path, config: dict[str, Any]) -> tuple[dict[str, Any
         "rubric_content_sha256": plan["rubric_content_sha256"],
         "arm_materials_sha256": plan["arm_materials_sha256"],
         "subject_runtime_sha256": plan["subject_runtime_sha256"],
+        "lifecycle_executables_sha256": plan["lifecycle_executables_sha256"],
         "plan_design_sha256": plan["plan_design_sha256"],
+        "blind_key_commitment": plan["blind_key_commitment"],
     }
     for key, expected_value in manifest_bindings.items():
         if holdout_manifest.get(key) != expected_value:
             raise PipelineError(f"Signed holdout manifest {key} changed after freeze")
-    arm_materials = load_json(run_dir / "frozen" / "arm-materials.json")
+    arm_materials_path = run_dir / "frozen" / "arm-materials.json"
+    ensure_private_file(arm_materials_path)
+    arm_materials = load_json(arm_materials_path)
     arm_body = {key: value for key, value in arm_materials.items() if key != "sha256"}
     if arm_materials.get("sha256") != sha256_json(arm_body) or arm_materials.get("sha256") != plan.get("arm_materials_sha256"):
         raise PipelineError("Frozen arm materials changed after freeze")
     runtime_path = run_dir / "frozen" / "subject-runtime.json"
     if not runtime_path.is_file() or runtime_path.is_symlink():
         raise PipelineError("Frozen subject runtime is missing or unsafe")
+    ensure_private_file(runtime_path)
     subject_runtime = load_json(runtime_path)
     runtime_body = {key: value for key, value in subject_runtime.items() if key != "sha256"}
     if (
@@ -656,7 +1056,23 @@ def _verified_plan(run_dir: Path, config: dict[str, Any]) -> tuple[dict[str, Any
         or subject_runtime != _subject_runtime_identity(config)
     ):
         raise PipelineError("Frozen subject runtime or adapter artifact changed after freeze")
-    rubric = load_json(run_dir / "frozen" / "rubric.json")
+    lifecycle_path = run_dir / "frozen" / "lifecycle-executables.json"
+    if not lifecycle_path.is_file() or lifecycle_path.is_symlink():
+        raise PipelineError("Frozen lifecycle executable bindings are missing or unsafe")
+    ensure_private_file(lifecycle_path)
+    lifecycle_executables = load_json(lifecycle_path)
+    lifecycle_body = {
+        key: value for key, value in lifecycle_executables.items() if key != "sha256"
+    }
+    if (
+        lifecycle_executables.get("sha256") != sha256_json(lifecycle_body)
+        or lifecycle_executables.get("sha256") != plan.get("lifecycle_executables_sha256")
+        or lifecycle_executables != lifecycle_executable_bindings(config)
+    ):
+        raise PipelineError("Frozen lifecycle executable path, argv, or content changed after freeze")
+    rubric_path = run_dir / "frozen" / "rubric.json"
+    ensure_private_file(rubric_path)
+    rubric = load_json(rubric_path)
     if sha256_json(rubric) != plan.get("rubric_content_sha256"):
         raise PipelineError("Frozen rubric changed after freeze")
     holdout_path = Path(plan["holdout"]["path"])
@@ -675,6 +1091,7 @@ def _verified_plan(run_dir: Path, config: dict[str, Any]) -> tuple[dict[str, Any
             raise PipelineError(f"Frozen plan {key} is missing")
     if re.fullmatch(r"[0-9a-f]{40,64}", plan["base_commit"]) is None:
         raise PipelineError("Frozen plan base_commit is not an immutable commit digest")
+    blind_key_commitment = verify_blind_key_commitment(run_dir, plan.get("blind_key_commitment"))
     expected_plan_body = {
         "schema_version": "1.0",
         "run_id": plan["run_id"],
@@ -694,7 +1111,9 @@ def _verified_plan(run_dir: Path, config: dict[str, Any]) -> tuple[dict[str, Any
         "holdout_manifest_sha256": sha256_file(holdout_manifest_path),
         "arm_materials_sha256": arm_materials["sha256"],
         "subject_runtime_sha256": subject_runtime["sha256"],
+        "lifecycle_executables_sha256": lifecycle_executables["sha256"],
         "plan_design_sha256": plan_design["sha256"],
+        "blind_key_commitment": blind_key_commitment,
         "trials_per_task": plan_design["trials_per_task"],
         "arms": plan_design["arms"],
         "cells": plan_design["cells"],
@@ -777,7 +1196,27 @@ def _artifact_file(value: Any, root: Path, label: str) -> Path:
         resolved.relative_to(resolved_root)
     except ValueError as exc:
         raise PipelineError(f"Persisted {label} escapes its attempt directory: {path}") from exc
+    ensure_private_file(resolved)
+    current = resolved.parent
+    while True:
+        ensure_private_directory(current)
+        if current == resolved_root:
+            break
+        if current.parent == current:
+            raise PipelineError(f"Persisted {label} directory escapes its attempt root: {path}")
+        current = current.parent
     return resolved
+
+
+def _normalize_private_tree(root: Path) -> None:
+    ensure_private_directory(root, normalize=True)
+    for current, directories, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        ensure_private_directory(current_path, normalize=True)
+        for name in directories:
+            ensure_private_directory(current_path / name, normalize=True)
+        for name in files:
+            ensure_private_file(current_path / name, normalize=True)
 
 
 def _verify_attempt_artifacts(
@@ -908,12 +1347,12 @@ def invoke_adapter(
     env_allowlist: Sequence[str] = ("PATH", "TMPDIR", "LANG", "LC_ALL"),
 ) -> dict[str, Any]:
     attempt_dir = attempt_dir.resolve()
-    attempt_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(attempt_dir, create=True, normalize=not attempt_dir.exists())
     attempts: list[dict[str, Any]] = []
     for attempt in range(1, max_transient_retries + 2):
         invocation_id = uuid.uuid4().hex
         invocation_dir = (attempt_dir / f"attempt-{attempt}-{invocation_id}").resolve()
-        invocation_dir.mkdir(parents=True, exist_ok=False)
+        ensure_private_directory(invocation_dir, create=True, normalize=True)
         request_path = invocation_dir / "request.json"
         response_path = invocation_dir / "response.json"
         request_id = f"REQ-{uuid.uuid4().hex}"
@@ -935,6 +1374,7 @@ def invoke_adapter(
             completed = subprocess.CompletedProcess(argv, 124, exc.stdout or "", exc.stderr or "adapter timed out")
         except OSError as exc:
             completed = subprocess.CompletedProcess(argv, 127, "", str(exc))
+        _normalize_private_tree(invocation_dir)
         elapsed_ms = round((time.monotonic() - started) * 1000, 3)
         response: dict[str, Any]
         if response_path.is_symlink():
@@ -1040,6 +1480,7 @@ def run_subjects(repo_root: Path, run_dir: Path, config: dict[str, Any]) -> dict
         if target.is_symlink():
             raise PipelineError(f"Existing result cell is unsafe: {target}")
         if target.is_file():
+            ensure_private_file(target)
             existing = load_json(target)
             _verify_result_cell(run_dir, plan, cell, existing, request)
             if existing.get("status") == "completed":
@@ -1072,25 +1513,69 @@ def run_subjects(repo_root: Path, run_dir: Path, config: dict[str, Any]) -> dict
     return {"completed": completed_count, "failed": failed_count, "resumed": resumed_count}
 
 
+def _blind_hmac(key: bytes, purpose: str, binding: dict[str, Any]) -> str:
+    payload = canonical_json_bytes(
+        {"schema_version": "1.0", "purpose": purpose, "binding": binding}
+    )
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
+def _blind_cell_binding(plan: dict[str, Any], cell: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "plan_sha256": plan["plan_sha256"],
+        "cell_id": cell["cell_id"],
+        "task_id": cell["task_id"],
+        "domain": cell["domain"],
+        "trial": int(cell["trial"]),
+        "arm": cell["arm"],
+    }
+
+
+def _blind_packet_binding(plan: dict[str, Any], cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    ordered = sorted((_blind_cell_binding(plan, cell) for cell in cells), key=lambda value: value["cell_id"])
+    return {
+        "plan_sha256": plan["plan_sha256"],
+        "task_id": ordered[0]["task_id"],
+        "trial": ordered[0]["trial"],
+        "cells": ordered,
+    }
+
+
 def _blind_artifacts(
     run_dir: Path,
-    config: dict[str, Any],
     plan: dict[str, Any],
     arm_materials: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    key = _read_private_file(
+        _private_grading_path(run_dir, "blind-key.bin", create=False),
+        expected_bytes=BLIND_KEY_BYTES,
+        label="blind key",
+    )
+    if not hmac.compare_digest(sha256_bytes(key), plan["blind_key_commitment"]):
+        raise PipelineError("Blind key does not match the frozen commitment")
     tasks = _task_index(Path(plan["holdout"]["path"]))
     subject_runtime = load_json(run_dir / "frozen" / "subject-runtime.json")
     groups: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for cell in plan["cells"]:
         groups[(cell["task_id"], int(cell["trial"]))].append(cell)
-    records: list[dict[str, Any]] = []
+    ordered_records: list[tuple[str, dict[str, Any]]] = []
     mapping: list[dict[str, Any]] = []
+    packet_ids: set[str] = set()
+    candidate_ids: set[str] = set()
+    packet_order_tokens: set[str] = set()
     for (task_id, trial), cells in sorted(groups.items()):
         if {cell["arm"] for cell in cells} != set(ARMS):
             raise PipelineError(f"Blind group lacks a complete four-arm match: {task_id}:{trial}")
-        packet_id = sha256_bytes(f"packet:{config['evaluation']['blind_seed']}:{task_id}:{trial}".encode())[:24]
-        candidates: list[dict[str, Any]] = []
-        for cell in cells:
+        packet_binding = _blind_packet_binding(plan, cells)
+        packet_id = _blind_hmac(key, "packet-id", packet_binding)
+        packet_order = _blind_hmac(key, "packet-order", packet_binding)
+        if packet_id in packet_ids or packet_order in packet_order_tokens:
+            raise PipelineError("Blind packet identifiers or ordering tokens are duplicated")
+        packet_ids.add(packet_id)
+        packet_order_tokens.add(packet_order)
+        ordered_candidates: list[tuple[str, dict[str, Any]]] = []
+        candidate_order_tokens: set[str] = set()
+        for cell in sorted(cells, key=lambda value: value["cell_id"]):
             result_path = run_dir / "results" / "cells" / f"{cell['cell_id']}.json"
             if not result_path.is_file() or result_path.is_symlink():
                 raise PipelineError(f"Missing result cell: {cell['cell_id']}")
@@ -1099,8 +1584,16 @@ def _blind_artifacts(
             _verify_result_cell(run_dir, plan, cell, result, request)
             if result.get("status") != "completed":
                 raise PipelineError(f"Cannot blind invalid result cell: {cell['cell_id']}")
-            candidate_id = sha256_bytes(f"candidate:{config['evaluation']['blind_seed']}:{cell['cell_id']}".encode())[:24]
-            candidates.append({"candidate_id": candidate_id, "output": result["response"]["output"]})
+            cell_binding = _blind_cell_binding(plan, cell)
+            candidate_id = _blind_hmac(key, "candidate-id", cell_binding)
+            candidate_order = _blind_hmac(key, "candidate-order", cell_binding)
+            if candidate_id in candidate_ids or candidate_order in candidate_order_tokens:
+                raise PipelineError("Blind candidate identifiers or ordering tokens are duplicated")
+            candidate_ids.add(candidate_id)
+            candidate_order_tokens.add(candidate_order)
+            ordered_candidates.append(
+                (candidate_order, {"candidate_id": candidate_id, "output": result["response"]["output"]})
+            )
             mapping.append(
                 {
                     "packet_id": packet_id,
@@ -1111,10 +1604,12 @@ def _blind_artifacts(
                     "arm": cell["arm"],
                 }
             )
-        random.Random(f"{config['evaluation']['blind_seed']}:{packet_id}").shuffle(candidates)
+        candidates = [candidate for _, candidate in sorted(ordered_candidates, key=lambda value: value[0])]
         task = tasks[task_id]
-        records.append(
-            {
+        ordered_records.append(
+            (
+                packet_order,
+                {
                 "schema_version": "2.0",
                 "packet_id": packet_id,
                 "task_id": task_id,
@@ -1128,25 +1623,42 @@ def _blind_artifacts(
                     "forbidden": task["forbidden"],
                 },
                 "candidates": candidates,
-            }
+                },
+            )
         )
-    random.Random(int(config["evaluation"]["blind_seed"])).shuffle(records)
+    records = [record for _, record in sorted(ordered_records, key=lambda value: value[0])]
+    mapping.sort(key=lambda row: (row["packet_id"], row["candidate_id"]))
+    if len(candidate_ids) != len(mapping) or len(packet_ids) != len(records):
+        raise PipelineError("Blind bundle identifiers are not unique")
     return records, mapping
 
 
 def _persist_exact_bytes(path: Path, expected: bytes, label: str) -> None:
     if path.exists() or path.is_symlink():
+        ensure_private_file(path)
         if not path.is_file() or path.is_symlink() or path.read_bytes() != expected:
             raise PipelineError(f"Existing {label} does not match deterministic reconstruction")
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(path.parent, create=True, normalize=not path.parent.exists())
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
     try:
-        with temporary.open("xb") as handle:
+        os.fchmod(descriptor, 0o600)
+        handle = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        with handle:
             handle.write(expected)
             handle.flush()
-        temporary.replace(path)
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        ensure_private_file(path)
     finally:
+        if descriptor >= 0:
+            os.close(descriptor)
         if temporary.exists():
             temporary.unlink()
 
@@ -1157,26 +1669,30 @@ def _verify_blind_bundle(
     plan: dict[str, Any],
     arm_materials: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    records, mapping = _blind_artifacts(run_dir, config, plan, arm_materials)
+    records, mapping = _blind_artifacts(run_dir, plan, arm_materials)
     expected = {
         run_dir / "grading" / "blind-packet.jsonl": (_jsonl_bytes(records), "blind packet"),
-        run_dir / "private" / "blind-map.jsonl": (_jsonl_bytes(mapping), "private blind map"),
     }
     for path, (content, label) in expected.items():
         if not path.is_file() or path.is_symlink() or path.read_bytes() != content:
             raise PipelineError(f"{label.capitalize()} differs from deterministic reconstruction")
+    private_map_path = _private_grading_path(run_dir, "blind-map.jsonl", create=False)
+    if _read_private_file(private_map_path, expected_bytes=None, label="blind map") != _jsonl_bytes(mapping):
+        raise PipelineError("Private blind map differs from deterministic reconstruction")
     return records, mapping
 
 
 def build_blind_bundle(run_dir: Path, config: dict[str, Any]) -> dict[str, Any]:
     plan, arm_materials = _verified_plan(run_dir, config)
-    records, mapping = _blind_artifacts(run_dir, config, plan, arm_materials)
+    records, mapping = _blind_artifacts(run_dir, plan, arm_materials)
     _persist_exact_bytes(run_dir / "grading" / "blind-packet.jsonl", _jsonl_bytes(records), "blind packet")
-    _persist_exact_bytes(run_dir / "private" / "blind-map.jsonl", _jsonl_bytes(mapping), "private blind map")
+    private_map_path = _private_grading_path(run_dir, "blind-map.jsonl", create=False)
+    _persist_private_exact_bytes(private_map_path, _jsonl_bytes(mapping), "blind map")
     return {
         "records": len(records),
         "candidates": len(mapping),
         "packet_sha256": sha256_file(run_dir / "grading" / "blind-packet.jsonl"),
+        "blind_key_commitment": plan["blind_key_commitment"],
     }
 
 
@@ -1459,6 +1975,9 @@ def _build_evidence_manifest(
         "plan_sha256": plan["plan_sha256"],
         "plan_design_sha256": plan["plan_design_sha256"],
         "holdout_sha256": plan["holdout"]["sha256"],
+        "blind_key_commitment": plan["blind_key_commitment"],
+        "blind_packet_sha256": sha256_file(run_dir / "grading" / "blind-packet.jsonl"),
+        "blind_map_sha256": sha256_file(_private_grading_path(run_dir, "blind-map.jsonl", create=False)),
         "artifacts": {
             "plan": _evidence_artifact(run_dir, run_dir / "plan.json", "plan"),
             "candidate_manifest": _evidence_artifact(
@@ -1479,8 +1998,10 @@ def _build_evidence_manifest(
                 run_dir, run_dir / "grading" / "blind-packet.jsonl", "blind packet"
             ),
             "blind_map": _evidence_artifact(
-                run_dir, run_dir / "private" / "blind-map.jsonl", "blind map"
+                run_dir, run_dir / BLIND_MAP_RELATIVE_PATH, "blind map"
             ),
+            "final_grades": _evidence_artifact(run_dir, final_grades_path, "final grades"),
+            "human_review": _evidence_artifact(run_dir, review_path, "human review"),
         },
         "final_grades_sha256": sha256_file(final_grades_path),
         "human_review_sha256": sha256_file(review_path),
@@ -1489,16 +2010,196 @@ def _build_evidence_manifest(
     return {**body, "manifest_sha256": sha256_json(body)}
 
 
-def build_summary(run_dir: Path, config: dict[str, Any], final_grades_path: Path, review_path: Path) -> dict[str, Any]:
+def _validated_evidence_paths(manifest: dict[str, Any]) -> list[tuple[str, str]]:
+    required_top = {
+        "schema_version",
+        "run_id",
+        "plan_sha256",
+        "plan_design_sha256",
+        "holdout_sha256",
+        "blind_key_commitment",
+        "blind_packet_sha256",
+        "blind_map_sha256",
+        "artifacts",
+        "final_grades_sha256",
+        "human_review_sha256",
+        "cells",
+        "manifest_sha256",
+    }
+    if set(manifest) != required_top or manifest.get("schema_version") != "1.0":
+        raise PipelineError("Evidence manifest fields differ from the v1 canonical contract")
+    body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    if manifest.get("manifest_sha256") != sha256_json(body):
+        raise PipelineError("Evidence manifest self-hash mismatch")
+    for key in ("blind_key_commitment", "blind_packet_sha256", "blind_map_sha256"):
+        if not isinstance(manifest.get(key), str) or re.fullmatch(r"[0-9a-f]{64}", manifest[key]) is None:
+            raise PipelineError(f"Evidence manifest {key} is malformed")
+    required_artifacts = {
+        "plan",
+        "candidate_manifest",
+        "holdout_manifest",
+        "config",
+        "arm_materials",
+        "subject_runtime",
+        "rubric",
+        "blind_packet",
+        "blind_map",
+        "final_grades",
+        "human_review",
+    }
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != required_artifacts:
+        raise PipelineError("Evidence manifest artifact set differs from the canonical contract")
+
+    referenced: list[tuple[str, str]] = []
+
+    def add_artifact(value: Any, label: str) -> None:
+        if not isinstance(value, dict) or set(value) != {"path", "sha256"}:
+            raise PipelineError(f"Evidence manifest {label} reference is malformed")
+        path = value.get("path")
+        digest = value.get("sha256")
+        if (
+            not isinstance(path, str)
+            or not path
+            or Path(path).is_absolute()
+            or "\\" in path
+            or any(part in {"", ".", ".."} for part in Path(path).parts)
+        ):
+            raise PipelineError(f"Evidence manifest {label} path is unsafe")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise PipelineError(f"Evidence manifest {label} hash is malformed")
+        referenced.append((path, digest))
+
+    for label in sorted(required_artifacts):
+        add_artifact(artifacts[label], label)
+    cells = manifest.get("cells")
+    if not isinstance(cells, list) or not cells:
+        raise PipelineError("Evidence manifest has no result cells")
+    cell_ids: set[str] = set()
+    for cell in cells:
+        if not isinstance(cell, dict) or set(cell) != {"cell_id", "result", "result_sha256", "attempts"}:
+            raise PipelineError("Evidence manifest cell is malformed")
+        cell_id = cell.get("cell_id")
+        if not isinstance(cell_id, str) or not cell_id or cell_id in cell_ids:
+            raise PipelineError("Evidence manifest cell IDs are missing or duplicated")
+        cell_ids.add(cell_id)
+        add_artifact(cell["result"], f"result {cell_id}")
+        attempts = cell.get("attempts")
+        if not isinstance(attempts, list) or not attempts:
+            raise PipelineError(f"Evidence manifest cell has no attempts: {cell_id}")
+        expected_attempt = 1
+        for attempt in attempts:
+            if (
+                not isinstance(attempt, dict)
+                or set(attempt)
+                != {"attempt", "request", "raw_response", "normalized_response", "attempt_record"}
+                or attempt.get("attempt") != expected_attempt
+            ):
+                raise PipelineError(f"Evidence manifest attempts are malformed: {cell_id}")
+            add_artifact(attempt["request"], f"request {cell_id}:{expected_attempt}")
+            if attempt["raw_response"] is not None:
+                add_artifact(attempt["raw_response"], f"raw response {cell_id}:{expected_attempt}")
+            add_artifact(
+                attempt["normalized_response"], f"normalized response {cell_id}:{expected_attempt}"
+            )
+            add_artifact(attempt["attempt_record"], f"attempt record {cell_id}:{expected_attempt}")
+            expected_attempt += 1
+    paths = [path for path, _ in referenced]
+    if len(paths) != len(set(paths)):
+        raise PipelineError("Evidence manifest contains duplicate artifact paths")
+    return referenced
+
+
+def verify_evidence_manifest(run_dir: Path, config: dict[str, Any]) -> dict[str, Any]:
+    """Rehash and deterministically rederive the complete promotion evidence graph."""
+
+    manifest_path = run_dir / "evidence-manifest.json"
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise PipelineError("Canonical evidence manifest is missing or unsafe")
+    manifest = load_json(manifest_path)
+    referenced = _validated_evidence_paths(manifest)
+    if manifest_path.read_bytes() != canonical_json_bytes(manifest) + b"\n":
+        raise PipelineError("Evidence manifest is not in canonical byte form")
+    run_root = run_dir.resolve()
+    for relative, expected_sha256 in referenced:
+        candidate = run_dir / relative
+        current = run_dir
+        for part in Path(relative).parts:
+            current = current / part
+            if current.is_symlink():
+                raise PipelineError(f"Evidence artifact has a symlink path component: {relative}")
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(run_root)
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise PipelineError(f"Evidence artifact is missing or escapes the run directory: {relative}") from exc
+        if candidate.is_symlink() or not resolved.is_file() or sha256_file(resolved) != expected_sha256:
+            raise PipelineError(f"Evidence artifact hash or path mismatch: {relative}")
+
+    plan, arm_materials = _verified_plan(run_dir, config)
+    _verify_blind_bundle(run_dir, config, plan, arm_materials)
+    tasks = _task_index(Path(plan["holdout"]["path"]))
+    subject_runtime = load_json(run_dir / "frozen" / "subject-runtime.json")
+    results: dict[str, dict[str, Any]] = {}
+    for cell in plan["cells"]:
+        result_path = run_dir / "results" / "cells" / f"{cell['cell_id']}.json"
+        if not result_path.is_file() or result_path.is_symlink():
+            raise PipelineError(f"Evidence result cell is missing or unsafe: {cell['cell_id']}")
+        result = load_json(result_path)
+        request = _subject_request(plan, cell, tasks[cell["task_id"]], arm_materials, subject_runtime)
+        _verify_result_cell(run_dir, plan, cell, result, request)
+        results[cell["cell_id"]] = result
+    final_grades_path = run_dir / "grading" / "final-grades.jsonl"
+    review_path = run_dir / "grading" / "human-review.json"
+    expected = _build_evidence_manifest(run_dir, plan, results, final_grades_path, review_path)
+    if manifest != expected:
+        raise PipelineError("Evidence manifest differs from deterministic reconstruction")
+    summary = load_json(run_dir / "evaluation-summary.json")
+    expected_summary_evidence = {
+        "final_grades_sha256": sha256_file(final_grades_path),
+        "human_review_sha256": sha256_file(review_path),
+        "holdout_manifest_sha256": sha256_file(run_dir / "holdout-manifest.json"),
+        "blind_packet_sha256": sha256_file(run_dir / "grading" / "blind-packet.jsonl"),
+        "blind_map_sha256": sha256_file(_private_grading_path(run_dir, "blind-map.jsonl", create=False)),
+        "blind_map_path": BLIND_MAP_RELATIVE_PATH,
+        "blind_key_commitment": plan["blind_key_commitment"],
+        "evidence_manifest_sha256": sha256_file(manifest_path),
+    }
+    if summary.get("evidence") != expected_summary_evidence:
+        raise PipelineError("Evaluation summary evidence differs from the reverified artifact graph")
+    return manifest
+
+
+def build_summary(
+    run_dir: Path,
+    config: dict[str, Any],
+    final_grades_path: Path,
+    review_path: Path,
+    *,
+    review_signature_verifier: Callable[[dict[str, Any], dict[str, Any]], None] = verify_human_review_ssh_signature,
+) -> dict[str, Any]:
     plan, arm_materials = _verified_plan(run_dir, config)
     tasks = _task_index(Path(plan["holdout"]["path"]))
     subject_runtime = load_json(run_dir / "frozen" / "subject-runtime.json")
     _, mapping_rows = _verify_blind_bundle(run_dir, config, plan, arm_materials)
     expected_cells = {cell["cell_id"]: cell for cell in plan["cells"]}
-    expected_packets = {
-        sha256_bytes(f"packet:{config['evaluation']['blind_seed']}:{cell['task_id']}:{cell['trial']}".encode())[:24]
-        for cell in plan["cells"]
-    }
+    blind_key = _read_private_file(
+        _private_grading_path(run_dir, "blind-key.bin", create=False),
+        expected_bytes=BLIND_KEY_BYTES,
+        label="blind key",
+    )
+    grouped_cells: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for cell in plan["cells"]:
+        grouped_cells[(cell["task_id"], int(cell["trial"]))].append(cell)
+    expected_packets: set[str] = set()
+    expected_packet_by_cell: dict[str, str] = {}
+    for cells in grouped_cells.values():
+        packet_id = _blind_hmac(blind_key, "packet-id", _blind_packet_binding(plan, cells))
+        if packet_id in expected_packets:
+            raise PipelineError("Blind packet identifier collision")
+        expected_packets.add(packet_id)
+        for cell in cells:
+            expected_packet_by_cell[cell["cell_id"]] = packet_id
     mapping: dict[str, dict[str, Any]] = {}
     mapped_cells: set[str] = set()
     packet_candidates: dict[str, set[str]] = defaultdict(set)
@@ -1507,12 +2208,12 @@ def build_summary(run_dir: Path, config: dict[str, Any], final_grades_path: Path
         packet_id = row.get("packet_id")
         cell_id = row.get("cell_id")
         cell = expected_cells.get(str(cell_id))
-        expected_candidate_id = sha256_bytes(f"candidate:{config['evaluation']['blind_seed']}:{cell_id}".encode())[:24]
-        expected_packet_id = (
-            sha256_bytes(f"packet:{config['evaluation']['blind_seed']}:{cell['task_id']}:{cell['trial']}".encode())[:24]
+        expected_candidate_id = (
+            _blind_hmac(blind_key, "candidate-id", _blind_cell_binding(plan, cell))
             if cell is not None
             else None
         )
+        expected_packet_id = expected_packet_by_cell.get(str(cell_id))
         if (
             cell is None
             or candidate_id != expected_candidate_id
@@ -1529,8 +2230,24 @@ def build_summary(run_dir: Path, config: dict[str, Any], final_grades_path: Path
         mapped_cells.add(str(cell_id))
     if mapped_cells != set(expected_cells) or set(packet_candidates) != expected_packets or any(len(values) != len(ARMS) for values in packet_candidates.values()):
         raise PipelineError("Blind mapping does not cover every frozen four-arm packet")
-    grades = read_jsonl(final_grades_path)
-    review = load_json(review_path)
+    if not final_grades_path.is_file() or final_grades_path.is_symlink():
+        raise PipelineError("Final grades are missing or unsafe")
+    if not review_path.is_file() or review_path.is_symlink():
+        raise PipelineError("Human review is missing or unsafe")
+    frozen_final_grades_path = run_dir / "grading" / "final-grades.jsonl"
+    frozen_review_path = run_dir / "grading" / "human-review.json"
+    _persist_exact_bytes(
+        frozen_final_grades_path,
+        final_grades_path.read_bytes(),
+        "frozen final grades",
+    )
+    _persist_exact_bytes(
+        frozen_review_path,
+        review_path.read_bytes(),
+        "frozen human review",
+    )
+    grades = read_jsonl(frozen_final_grades_path)
+    review = load_json(frozen_review_path)
     required_review_fields = {
         "schema_version",
         "reviewer",
@@ -1543,10 +2260,11 @@ def build_summary(run_dir: Path, config: dict[str, Any], final_grades_path: Path
         "adjudication_complete",
         "integrity_valid",
         "contamination_detected",
+        "signature",
     }
     if review.get("schema_version") != "2.0" or set(review) - (required_review_fields | {"notes"}) or not required_review_fields.issubset(review):
         raise PipelineError("Human review fields do not match the v2 evidence-binding contract")
-    if review.get("grades_sha256") != sha256_file(final_grades_path):
+    if review.get("grades_sha256") != sha256_file(frozen_final_grades_path):
         raise PipelineError("Human review is not bound to the final grade file")
     review_bindings = {
         "plan_sha256": plan["plan_sha256"],
@@ -1557,6 +2275,10 @@ def build_summary(run_dir: Path, config: dict[str, Any], final_grades_path: Path
         raise PipelineError("Human review is not bound to the frozen plan, blind packet, and rubric")
     if not isinstance(review.get("reviewer"), str) or not review["reviewer"].strip():
         raise PipelineError("Human review lacks a named reviewer")
+    signature = review.get("signature")
+    if not isinstance(signature, dict) or set(signature) != {"algorithm", "identity", "namespace", "value"}:
+        raise PipelineError("Human-review signature fields are malformed")
+    review_signature_verifier(review, config)
     rubric = load_json(run_dir / "frozen" / "rubric.json")
     dimension_weights = _rubric_dimension_weights(rubric)
     required_gates = set(rubric.get("hard_gates", []))
@@ -1636,7 +2358,13 @@ def build_summary(run_dir: Path, config: dict[str, Any], final_grades_path: Path
                         for key in ("input_tokens", "output_tokens", "cost_usd")
                     )
 
-    evidence_manifest = _build_evidence_manifest(run_dir, plan, results, final_grades_path, review_path)
+    evidence_manifest = _build_evidence_manifest(
+        run_dir,
+        plan,
+        results,
+        frozen_final_grades_path,
+        frozen_review_path,
+    )
     evidence_manifest_path = run_dir / "evidence-manifest.json"
     _persist_exact_bytes(
         evidence_manifest_path,
@@ -1776,11 +2504,13 @@ def build_summary(run_dir: Path, config: dict[str, Any], final_grades_path: Path
         "resources": resources,
         "analysis_coverage": analysis_coverage,
         "evidence": {
-            "final_grades_sha256": sha256_file(final_grades_path),
-            "human_review_sha256": sha256_file(review_path),
+            "final_grades_sha256": sha256_file(frozen_final_grades_path),
+            "human_review_sha256": sha256_file(frozen_review_path),
             "holdout_manifest_sha256": sha256_file(run_dir / "holdout-manifest.json"),
             "blind_packet_sha256": sha256_file(run_dir / "grading" / "blind-packet.jsonl"),
-            "blind_map_sha256": sha256_file(run_dir / "private" / "blind-map.jsonl"),
+            "blind_map_sha256": sha256_file(_private_grading_path(run_dir, "blind-map.jsonl", create=False)),
+            "blind_map_path": BLIND_MAP_RELATIVE_PATH,
+            "blind_key_commitment": plan["blind_key_commitment"],
             "evidence_manifest_sha256": sha256_file(evidence_manifest_path),
         },
     }

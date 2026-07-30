@@ -7,7 +7,7 @@
   "required": ["schema_version", "packet_id", "adjudicated", "candidate_grades", "ranking"],
   "properties": {
     "schema_version": {"const": "2.0"},
-    "packet_id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+    "packet_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "adjudicated": {"const": true},
     "candidate_grades": {
       "type": "array",
@@ -18,7 +18,7 @@
         "additionalProperties": false,
         "required": ["candidate_id", "dimension_scores", "critical_failure", "hard_gates", "rationale"],
         "properties": {
-          "candidate_id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+          "candidate_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "score": {"type": "number", "minimum": 0, "maximum": 4},
           "dimension_scores": {
             "type": "object",
@@ -59,7 +59,7 @@
       "items": {
         "type": "array",
         "minItems": 1,
-        "items": {"type": "string", "pattern": "^[0-9a-f]{24}$"}
+          "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     }
   }

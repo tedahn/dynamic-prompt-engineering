@@ -10,6 +10,7 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+import stat
 import subprocess
 import tempfile
 from typing import Any, Iterable, Sequence
@@ -17,6 +18,10 @@ from typing import Any, Iterable, Sequence
 
 class PipelineError(RuntimeError):
     """Raised when a lifecycle invariant is not satisfied."""
+
+
+PRIVATE_DIRECTORY_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
 
 
 def utc_now() -> datetime:
@@ -54,6 +59,72 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _create_private_directories(path: Path) -> None:
+    """Create only missing directories, then remove any umask-dependent access."""
+
+    missing: list[Path] = []
+    current = path
+    while not current.exists() and not current.is_symlink():
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    path.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIRECTORY_MODE)
+    for directory in reversed(missing):
+        os.chmod(directory, PRIVATE_DIRECTORY_MODE, follow_symlinks=False)
+
+
+def ensure_private_directory(path: Path, *, create: bool = False, normalize: bool = False) -> None:
+    """Require an owner-only, caller-owned regular directory."""
+
+    if create and not path.exists() and not path.is_symlink():
+        _create_private_directories(path)
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise PipelineError(f"Private directory is missing: {path}") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise PipelineError(f"Private directory is unsafe: {path}")
+    if metadata.st_uid != os.getuid():
+        raise PipelineError(f"Private directory is not owned by the current user: {path}")
+    if normalize and stat.S_IMODE(metadata.st_mode) != PRIVATE_DIRECTORY_MODE:
+        os.chmod(path, PRIVATE_DIRECTORY_MODE, follow_symlinks=False)
+        metadata = path.lstat()
+    if stat.S_IMODE(metadata.st_mode) != PRIVATE_DIRECTORY_MODE:
+        raise PipelineError(f"Private directory mode must be 0700: {path}")
+
+
+def ensure_private_file(path: Path, *, normalize: bool = False) -> None:
+    """Require an owner-only, caller-owned regular non-symlink file."""
+
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise PipelineError(f"Private file is missing: {path}") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise PipelineError(f"Private file is unsafe: {path}")
+    if metadata.st_uid != os.getuid():
+        raise PipelineError(f"Private file is not owned by the current user: {path}")
+    if normalize and stat.S_IMODE(metadata.st_mode) != PRIVATE_FILE_MODE:
+        os.chmod(path, PRIVATE_FILE_MODE, follow_symlinks=False)
+        metadata = path.lstat()
+    if stat.S_IMODE(metadata.st_mode) != PRIVATE_FILE_MODE:
+        raise PipelineError(f"Private file mode must be 0600: {path}")
+
+
+def verify_private_tree(root: Path) -> None:
+    """Fail closed when private persisted state drifts in type, owner, or mode."""
+
+    ensure_private_directory(root)
+    for current, directories, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        ensure_private_directory(current_path)
+        for name in directories:
+            ensure_private_directory(current_path / name)
+        for name in files:
+            ensure_private_file(current_path / name)
+
+
 def load_json(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -62,16 +133,20 @@ def load_json(path: Path) -> dict[str, Any]:
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() or path.is_symlink():
+        ensure_private_file(path, normalize=True)
+    _create_private_directories(path.parent)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary)
     try:
+        os.chmod(temporary_path, PRIVATE_FILE_MODE, follow_symlinks=False)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(value, handle, indent=2, sort_keys=True, ensure_ascii=False)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_path, path)
+        ensure_private_file(path)
     finally:
         if temporary_path.exists():
             temporary_path.unlink()

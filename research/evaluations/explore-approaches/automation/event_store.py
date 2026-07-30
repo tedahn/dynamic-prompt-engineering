@@ -8,12 +8,22 @@ import sqlite3
 from typing import Any
 import uuid
 
-from .core import PipelineError, canonical_json_bytes, iso_now, sha256_bytes
+from .core import (
+    PipelineError,
+    canonical_json_bytes,
+    ensure_private_directory,
+    ensure_private_file,
+    iso_now,
+    sha256_bytes,
+)
 
 
 class EventStore:
     def __init__(self, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.exists() or path.is_symlink()
+        ensure_private_directory(path.parent, create=True, normalize=not existing)
+        if existing:
+            ensure_private_file(path)
         self.path = path
         self.connection = sqlite3.connect(path)
         self.connection.row_factory = sqlite3.Row
@@ -45,9 +55,19 @@ class EventStore:
             """
         )
         self.connection.commit()
+        self._secure_files(normalize=True)
+
+    def _secure_files(self, *, normalize: bool = False) -> None:
+        ensure_private_directory(self.path.parent)
+        for suffix in ("", "-wal", "-shm"):
+            candidate = Path(f"{self.path}{suffix}")
+            if candidate.exists() or candidate.is_symlink():
+                ensure_private_file(candidate, normalize=normalize)
 
     def close(self) -> None:
+        self._secure_files()
         self.connection.close()
+        self._secure_files(normalize=True)
 
     def current(self, stream: str) -> dict[str, Any]:
         row = self.connection.execute("SELECT version,last_hash,state FROM streams WHERE stream=?", (stream,)).fetchone()
@@ -78,6 +98,7 @@ class EventStore:
                 if duplicate["event_type"] != event_type or duplicate["actor"] != actor or existing_payload != payload:
                     raise PipelineError("Conflicting idempotency-key reuse")
                 self.connection.commit()
+                self._secure_files(normalize=True)
                 return dict(duplicate)
             current = self.current(stream)
             if current["version"] != expected_version:
@@ -119,9 +140,11 @@ class EventStore:
                 (stream, version, event_hash, next_state),
             )
             self.connection.commit()
+            self._secure_files(normalize=True)
             return {**body, "event_hash": event_hash}
         except Exception:
             self.connection.rollback()
+            self._secure_files(normalize=True)
             raise
 
     def events(self, stream: str) -> list[dict[str, Any]]:

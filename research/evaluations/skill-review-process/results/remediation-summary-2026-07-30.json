@@ -36,7 +36,7 @@
         "skills/explore-approaches/",
         "research/evaluations/explore-approaches/"
       ],
-      "validation": "48 tests, candidate checker, model-free end-to-end run, schema parsing, compilation, credential scan, and whitespace checks passed"
+      "validation": "58 tests, candidate checker, model-free end-to-end run, schema parsing, compilation, credential scan, and whitespace checks passed"
     }
   ],
   "additional_hardening": [
@@ -70,13 +70,36 @@
       "finding": "Hosted CI omitted loadability checks for repository skill packages",
       "severity": "P2",
       "status": "mechanically_validated_pending_exact_head_review",
-      "validation": "A dependency-free package validator and three regression tests cover frontmatter and agent metadata"
+      "validation": "A dependency-free package validator and four regression tests cover frontmatter and agent metadata"
     },
     {
       "finding": "Runtime provenance, plan and evidence bindings, grading dimensions, reviewer authorization, promotion ancestry, and installation source custody lacked complete fixture coverage during concurrent hardening",
       "severity": "P2",
       "status": "mechanically_validated_pending_exact_head_review",
-      "validation": "Runtime responses bind to frozen adapter artifacts; plan and evidence manifests are canonical and hash-bound; scored dimensions are explicit; eligible reviews come from the frozen allowlist and exclude the author and automation actor; merge ancestry and installation source modes fail closed; 48 lifecycle tests pass"
+      "validation": "Runtime responses bind to frozen adapter artifacts; plan and evidence manifests are canonical and hash-bound; scored dimensions are explicit; eligible reviews come from the frozen allowlist and exclude the author and automation actor; merge ancestry and installation source modes fail closed; 58 lifecycle tests pass"
+    }
+  ],
+  "exact_head_review_remediation": [
+    {
+      "review_id": "PR-003-8fd7ef562b5a",
+      "finding_ids": ["ER-001", "ER-002"],
+      "severity": "P1/P2",
+      "status": "mechanically_validated_pending_replacement_exact_head_review",
+      "validation": "The review-bundle validator now exhaustively enforces its bundled schema before semantic checks and distinguishes absent Git paths from operational failures; 16 bundle tests and 20 full review-process tests pass"
+    },
+    {
+      "review_id": "PR-003-8fd7ef562b5a",
+      "finding_ids": ["SSO-001", "SSO-002", "SSO-003", "SSO-004"],
+      "severity": "P1/P2",
+      "status": "mechanically_validated_pending_replacement_exact_head_review",
+      "validation": "Installer, validator, and canary executables are frozen and reverified; human identities, private file modes, and the active GitHub actor fail closed; 58 lifecycle tests, the candidate checker, and model-free end-to-end rehearsal pass"
+    },
+    {
+      "review_id": "PR-003-8fd7ef562b5a",
+      "finding_ids": ["EM-003", "EM-004", "EM-005"],
+      "severity": "P2",
+      "status": "mechanically_validated_pending_replacement_exact_head_review",
+      "validation": "T-005 evidence references, the T-020 lifecycle count, and C-048 source traceability are synchronized to the current records"
     }
   ],
   "merge_readiness": {
@@ -90,6 +113,7 @@
   },
   "limitations": [
     "The prior PR-001 packet remains immutable and correctly reports the old head as changes_required.",
+    "Exact-head review PR-003 remains failed evidence for head 8fd7ef562b5a; its two P1 and seven P2 findings require a replacement exact-head review after remediation.",
     "Earlier bounded reviewer messages were not retained as frozen hash-bound artifacts and are not treated as closure evidence; a new exact-head review is required after commit creation.",
     "No scored behavioral pilot cells ran, so safety efficacy generalization and adoption claims remain unsupported.",
     "No live Codex workspace-write credential-discovery run or Linux execution was performed.",

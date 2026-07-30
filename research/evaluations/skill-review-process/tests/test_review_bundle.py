@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[4] / "skills" / "review-skill-candidate" / "scripts" / "review_bundle.py"
@@ -81,6 +82,35 @@ class ReviewBundleTests(unittest.TestCase):
             "limitations": [],
         }
 
+    def _finding(self) -> dict:
+        return {
+            "finding_id": "EM-001", "severity": "P1", "status": "open",
+            "title": "Claim exceeds evidence", "claim": "The candidate claims an unmeasured result.",
+            "impact": "The merge record would be misleading.",
+            "evidence": [{"path": "skill.md", "line_start": 3, "line_end": 3}],
+            "recommendation": "Narrow the claim.", "counterevidence": "No held-out result exists.",
+            "confidence": "high",
+        }
+
+    def _schema_errors(self, value: object) -> list[str]:
+        role = "evidence-methodology"
+        path = self.bundle / "submissions" / f"{role}.json"
+        REVIEW.write_json(path, value)
+        errors: list[str] = []
+        submission, findings = REVIEW.validate_submission(
+            self.repo, path, role, self._manifest(), errors
+        )
+        self.assertIsNone(submission)
+        self.assertEqual(findings, [])
+        self.assertTrue(errors)
+        return errors
+
+    def _assert_schema_error(self, value: object, *fragments: str) -> None:
+        message = "\n".join(self._schema_errors(value))
+        self.assertIn("submission schema", message)
+        for fragment in fragments:
+            self.assertIn(fragment, message)
+
     def _write_reviews(self, shared_id: bool = False, finding: dict | None = None) -> None:
         for index, role in enumerate(REVIEW.REQUIRED_ROLES, 1):
             findings = [finding] if finding and role == "evidence-methodology" else []
@@ -127,6 +157,134 @@ class ReviewBundleTests(unittest.TestCase):
                 requested_by="test", output=str(self.bundle), review_id="TEST-002",
                 built_at="2026-07-30T00:00:00Z", policy=[], artifact=[], validation=[],
             ))
+
+    def test_submission_schema_rejects_missing_and_additional_properties(self) -> None:
+        base = self._submission("evidence-methodology", "reviewer-1", [self._finding()])
+        cases: list[tuple[str, dict, tuple[str, ...]]] = []
+
+        value = json.loads(json.dumps(base))
+        value.pop("limitations")
+        cases.append(("missing root", value, ("$:", "missing required property 'limitations'")))
+
+        value = json.loads(json.dumps(base))
+        value["findings"][0]["evidence"][0].pop("line_end")
+        cases.append((
+            "missing nested evidence",
+            value,
+            ("$.findings[0].evidence[0]", "missing required property 'line_end'"),
+        ))
+
+        for label, container in (
+            ("root", None),
+            ("reviewer", "reviewer"),
+            ("finding", "finding"),
+            ("evidence", "evidence"),
+        ):
+            value = json.loads(json.dumps(base))
+            if container is None:
+                target = value
+            elif container == "finding":
+                target = value["findings"][0]
+            elif container == "evidence":
+                target = value["findings"][0]["evidence"][0]
+            else:
+                target = value[container]
+            target["unexpected"] = "not allowed"
+            cases.append((
+                f"additional {label}",
+                value,
+                ("additional property 'unexpected' is not allowed",),
+            ))
+
+        for label, value, fragments in cases:
+            with self.subTest(label=label):
+                self._assert_schema_error(value, *fragments)
+
+    def test_submission_schema_rejects_types_lengths_and_nested_contracts(self) -> None:
+        base = self._submission("evidence-methodology", "reviewer-1", [self._finding()])
+        cases: list[tuple[str, dict, tuple[str, ...]]] = []
+        mutations = (
+            ("findings object", ("findings",), {}, ("$.findings", "expected type array")),
+            ("model number", ("reviewer", "model"), 7, ("$.reviewer.model", "string or null")),
+            ("not reviewed item", ("scope", "not_reviewed"), [7], ("$.scope.not_reviewed[0]", "string")),
+            ("empty title", ("findings", 0, "title"), "", ("$.findings[0].title", "length")),
+            ("boolean line", ("findings", 0, "evidence", 0, "line_start"), True, ("line_start", "integer")),
+            ("empty evidence", ("findings", 0, "evidence"), [], ("$.findings[0].evidence", "at least 1")),
+            ("null limitation", ("limitations",), [None], ("$.limitations[0]", "string")),
+        )
+        for label, path, replacement, fragments in mutations:
+            value = json.loads(json.dumps(base))
+            target: object = value
+            for key in path[:-1]:
+                target = target[key]  # type: ignore[index]
+            target[path[-1]] = replacement  # type: ignore[index]
+            cases.append((label, value, fragments))
+        for label, value, fragments in cases:
+            with self.subTest(label=label):
+                self._assert_schema_error(value, *fragments)
+
+    def test_submission_schema_rejects_patterns_and_minimums(self) -> None:
+        base = self._submission("evidence-methodology", "reviewer-1", [self._finding()])
+        mutations = (
+            ("base sha", ("target", "base_sha"), "A" * 40, "$.target.base_sha"),
+            ("diff sha", ("target", "diff_sha256"), "a" * 63, "$.target.diff_sha256"),
+            ("finding id", ("findings", 0, "finding_id"), "em-1", "$.findings[0].finding_id"),
+            ("line minimum", ("findings", 0, "evidence", 0, "line_start"), 0, "line_start"),
+        )
+        for label, path, replacement, expected_path in mutations:
+            value = json.loads(json.dumps(base))
+            target: object = value
+            for key in path[:-1]:
+                target = target[key]  # type: ignore[index]
+            target[path[-1]] = replacement  # type: ignore[index]
+            with self.subTest(label=label):
+                self._assert_schema_error(value, expected_path)
+
+    def test_submission_schema_rejects_duplicate_unique_scope_items(self) -> None:
+        base = self._submission("evidence-methodology", "reviewer-1")
+        for field in ("reviewed_files", "concerns_checked"):
+            value = json.loads(json.dumps(base))
+            value["scope"][field].append(value["scope"][field][0])
+            with self.subTest(field=field):
+                self._assert_schema_error(value, f"$.scope.{field}", "are not unique")
+
+    def test_schema_validator_rejects_unknown_vocabulary(self) -> None:
+        with self.assertRaisesRegex(REVIEW.ReviewError, "Unsupported JSON Schema keyword"):
+            REVIEW.validate_json_schema("value", {"type": "string", "maxLength": 3})
+
+    def test_blob_at_distinguishes_missing_paths_from_git_failures(self) -> None:
+        self.assertEqual(REVIEW.blob_at(self.repo, self.head, "app.py"), b"VALUE = 2\nSAFE = True\n")
+        self.assertIsNone(REVIEW.blob_at(self.repo, self.head, "missing.py"))
+        with self.assertRaisesRegex(REVIEW.ReviewError, "git ls-tree probe failed"):
+            REVIEW.blob_at(self.repo, "0" * 40, "app.py")
+
+    def test_blob_at_sanitizes_unexpected_probe_failure(self) -> None:
+        failure = subprocess.CompletedProcess(
+            args=[], returncode=128, stdout=b"",
+            stderr=(f"fatal: cannot inspect {self.repo}\n".encode() + b"\x00" + b"x" * 500),
+        )
+        with mock.patch.object(REVIEW.subprocess, "run", return_value=failure):
+            with self.assertRaises(REVIEW.ReviewError) as raised:
+                REVIEW.blob_at(self.repo, self.head, "app.py")
+        message = str(raised.exception)
+        self.assertIn("git ls-tree probe failed with exit 128", message)
+        self.assertIn("<repo>", message)
+        self.assertNotIn(str(self.repo), message)
+        self.assertNotIn("\n", message)
+        self.assertNotIn("\x00", message)
+        self.assertLess(len(message), 400)
+
+    def test_blob_at_raises_when_exact_blob_read_fails(self) -> None:
+        object_id = b"a" * 40
+        probe = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"100644 blob " + object_id + b"\tapp.py\x00", stderr=b"",
+        )
+        failure = subprocess.CompletedProcess(
+            args=[], returncode=128, stdout=b"", stderr=b"fatal: object disappeared\n",
+        )
+        with mock.patch.object(REVIEW.subprocess, "run", side_effect=[probe, failure]):
+            with self.assertRaisesRegex(REVIEW.ReviewError, "git cat-file blob read failed"):
+                REVIEW.blob_at(self.repo, self.head, "app.py")
 
     def test_missing_reviews_fail_closed(self) -> None:
         result = self._validate()

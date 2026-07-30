@@ -9,6 +9,9 @@
     "plan_sha256",
     "plan_design_sha256",
     "holdout_sha256",
+    "blind_key_commitment",
+    "blind_packet_sha256",
+    "blind_map_sha256",
     "artifacts",
     "final_grades_sha256",
     "human_review_sha256",
@@ -21,6 +24,9 @@
     "plan_sha256": {"$ref": "#/$defs/sha256"},
     "plan_design_sha256": {"$ref": "#/$defs/sha256"},
     "holdout_sha256": {"$ref": "#/$defs/sha256"},
+    "blind_key_commitment": {"$ref": "#/$defs/sha256"},
+    "blind_packet_sha256": {"$ref": "#/$defs/sha256"},
+    "blind_map_sha256": {"$ref": "#/$defs/sha256"},
     "final_grades_sha256": {"$ref": "#/$defs/sha256"},
     "human_review_sha256": {"$ref": "#/$defs/sha256"},
     "manifest_sha256": {"$ref": "#/$defs/sha256"},
@@ -36,7 +42,9 @@
         "subject_runtime",
         "rubric",
         "blind_packet",
-        "blind_map"
+        "blind_map",
+        "final_grades",
+        "human_review"
       ],
       "properties": {
         "plan": {"$ref": "#/$defs/artifact"},
@@ -47,7 +55,9 @@
         "subject_runtime": {"$ref": "#/$defs/artifact"},
         "rubric": {"$ref": "#/$defs/artifact"},
         "blind_packet": {"$ref": "#/$defs/artifact"},
-        "blind_map": {"$ref": "#/$defs/artifact"}
+        "blind_map": {"$ref": "#/$defs/artifact"},
+        "final_grades": {"$ref": "#/$defs/artifact"},
+        "human_review": {"$ref": "#/$defs/artifact"}
       }
     },
     "cells": {

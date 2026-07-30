@@ -42,6 +42,8 @@
         "holdout_manifest_sha256",
         "blind_packet_sha256",
         "blind_map_sha256",
+        "blind_map_path",
+        "blind_key_commitment",
         "evidence_manifest_sha256"
       ],
       "properties": {
@@ -50,6 +52,8 @@
         "holdout_manifest_sha256": {"$ref": "#/$defs/sha256"},
         "blind_packet_sha256": {"$ref": "#/$defs/sha256"},
         "blind_map_sha256": {"$ref": "#/$defs/sha256"},
+        "blind_map_path": {"const": "private/grading/blind-map.jsonl"},
+        "blind_key_commitment": {"$ref": "#/$defs/sha256"},
         "evidence_manifest_sha256": {"$ref": "#/$defs/sha256"}
       }
     }

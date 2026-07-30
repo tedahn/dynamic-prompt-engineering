@@ -28,7 +28,6 @@
     "max_output_bytes": 1000000,
     "adapter_env_allowlist": ["PATH", "TMPDIR", "LANG", "LC_ALL"],
     "plan_seed": 20260730,
-    "blind_seed": 3072026,
     "bootstrap_seed": 7302026,
     "bootstrap_resamples": 50000,
     "analysis_plan": {
@@ -47,8 +46,8 @@
       "provider_id": "",
       "model_id": "",
       "settings": {},
-      "artifact_paths": [],
-      "image_digest": ""
+      "entrypoint_path": "",
+      "dependency_paths": []
     },
     "subject_adapter_argv": [],
     "grader_adapter_argv": [],
@@ -78,6 +77,12 @@
   "holdout_verification": {
     "mode": "ssh",
     "namespace": "codex-skill-holdout",
+    "allowed_signers_path": "",
+    "expected_identity": ""
+  },
+  "human_review_verification": {
+    "mode": "ssh",
+    "namespace": "codex-skill-human-review",
     "allowed_signers_path": "",
     "expected_identity": ""
   },
@@ -121,6 +126,7 @@
     }
   },
   "installation": {
+    "source_mode": "installer",
     "skills_root": "~/.codex/skills",
     "skill_name": "explore-approaches",
     "installer_script": "~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py",

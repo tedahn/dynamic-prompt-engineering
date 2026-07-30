@@ -14,6 +14,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from automation.core import PipelineError, atomic_write_json, sha256_file, sha256_json
+from automation.evaluation import lifecycle_executable_bindings
 from automation.promotion import (
     approval_payload,
     atomic_install,
@@ -30,6 +31,7 @@ from automation.promotion import (
     validate_prepared_promotion,
     verify_merged_candidate,
     verify_promoted_manifest,
+    verify_github_actor,
     verify_ssh_signature,
     write_immutable_record,
 )
@@ -237,8 +239,22 @@ class PromotionAutomationTest(unittest.TestCase):
                     "skill_name": "explore-approaches",
                     "backup_directory": str(root / "backups"),
                     "quarantine_directory": str(root / "quarantine"),
+                    "validator_argv": [str(Path(sys.executable).resolve()), str(helper), "{skill}"],
+                },
+                "evaluation": {
+                    "canary_adapter_argv": [
+                        str(Path(sys.executable).resolve()),
+                        str(helper),
+                        "{input}",
+                        "{output}",
+                    ]
                 },
             }
+            bindings = lifecycle_executable_bindings(config)
+            run_dir = root / "run"
+            atomic_write_json(run_dir / "frozen/lifecycle-executables.json", bindings)
+            plan_body = {"lifecycle_executables_sha256": bindings["sha256"]}
+            atomic_write_json(run_dir / "plan.json", {**plan_body, "plan_sha256": sha256_json(plan_body)})
             observed: list[str] = []
 
             def install(command: list[str], **_kwargs):
@@ -252,7 +268,7 @@ class PromotionAutomationTest(unittest.TestCase):
                 receipt = atomic_install(
                     root / "checkout",
                     "f" * 40,
-                    root / "run",
+                    run_dir,
                     config,
                     canary=lambda *_: {"status": "completed", "output": {"passed": True}},
                 )
@@ -261,8 +277,30 @@ class PromotionAutomationTest(unittest.TestCase):
             self.assertEqual(observed[observed.index("--path") + 1], "skills/explore-approaches")
             self.assertEqual(observed[observed.index("--ref") + 1], "f" * 40)
 
+            drift_run = root / "drift-run"
+            atomic_write_json(drift_run / "frozen/lifecycle-executables.json", bindings)
+            atomic_write_json(
+                drift_run / "plan.json",
+                {**plan_body, "plan_sha256": sha256_json(plan_body)},
+            )
+            helper.write_text("# substituted after approval\n", encoding="utf-8")
+            with patch("automation.promotion.run_command") as external_call:
+                with self.assertRaisesRegex(PipelineError, "changed after freeze"):
+                    atomic_install(
+                        root / "checkout",
+                        "e" * 40,
+                        drift_run,
+                        config,
+                        canary=lambda *_: {},
+                    )
+            external_call.assert_not_called()
+            self.assertEqual(
+                (root / "root-skills/explore-approaches/SKILL.md").read_text(encoding="utf-8"),
+                "approved\n",
+            )
+
             config["installation"]["installer_script"] = str(root / "missing-helper.py")
-            with self.assertRaisesRegex(PipelineError, "helper is missing"):
+            with self.assertRaisesRegex(PipelineError, "missing|regular non-symlink"):
                 atomic_install(root / "checkout", "e" * 40, root / "missing-run", config, canary=lambda *_: {})
     @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
     def test_detached_ssh_signature_is_verified_and_tamper_evident(self) -> None:
@@ -497,6 +535,80 @@ class PromotionAutomationTest(unittest.TestCase):
             self.assertEqual(intent["phase"], "rolled-back")
             self.assertFalse(Path(intent["backup"]).exists())
 
+    def test_canary_internal_symlink_without_previous_install_is_quarantined(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = root / "checkout/skills/explore-approaches"
+            checkout.mkdir(parents=True)
+            (checkout / "SKILL.md").write_text("candidate\n", encoding="utf-8")
+            destination = root / "root-skills/explore-approaches"
+            config = {
+                "candidate": {"skill_path": "skills/explore-approaches"},
+                "installation": {
+                    "source_mode": "local-test",
+                    "skills_root": str(root / "root-skills"),
+                    "skill_name": "explore-approaches",
+                    "backup_directory": str(root / "backups"),
+                    "quarantine_directory": str(root / "quarantine"),
+                },
+            }
+
+            def poison_then_fail(installed: Path, *_args) -> dict:
+                (installed / "unsafe-link").symlink_to(root / "missing-target")
+                raise PipelineError("deliberate internal symlink")
+
+            run_dir = root / "run"
+            with self.assertRaisesRegex(PipelineError, "installation rolled back"):
+                atomic_install(root / "checkout", "f" * 40, run_dir, config, canary=poison_then_fail)
+            rollback = json.loads((run_dir / "rollback-record.json").read_text(encoding="utf-8"))
+            quarantine = Path(rollback["quarantine"])
+            self.assertFalse(destination.exists())
+            self.assertFalse(destination.is_symlink())
+            self.assertTrue((quarantine / "unsafe-link").is_symlink())
+            self.assertIn("unavailable", rollback["reason"])
+            self.assertFalse(rollback["restored_previous"])
+            with self.assertRaisesRegex(PipelineError, "start a new governed run"):
+                atomic_install(root / "checkout", "f" * 40, run_dir, config, canary=poison_then_fail)
+
+    def test_canary_internal_symlink_restores_previous_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = root / "checkout/skills/explore-approaches"
+            checkout.mkdir(parents=True)
+            (checkout / "SKILL.md").write_text("candidate\n", encoding="utf-8")
+            destination = root / "root-skills/explore-approaches"
+            destination.mkdir(parents=True)
+            (destination / "SKILL.md").write_text("previous\n", encoding="utf-8")
+            config = {
+                "candidate": {"skill_path": "skills/explore-approaches"},
+                "installation": {
+                    "source_mode": "local-test",
+                    "skills_root": str(root / "root-skills"),
+                    "skill_name": "explore-approaches",
+                    "backup_directory": str(root / "backups"),
+                    "quarantine_directory": str(root / "quarantine"),
+                },
+            }
+
+            def poison_then_fail(installed: Path, *_args) -> dict:
+                (installed / "unsafe-link").symlink_to(root / "missing-target")
+                raise PipelineError("deliberate internal symlink")
+
+            run_dir = root / "run"
+            with self.assertRaisesRegex(PipelineError, "installation rolled back"):
+                atomic_install(root / "checkout", "1" * 40, run_dir, config, canary=poison_then_fail)
+            rollback = json.loads((run_dir / "rollback-record.json").read_text(encoding="utf-8"))
+            intent = json.loads((run_dir / "install-intent.json").read_text(encoding="utf-8"))
+            quarantine = Path(rollback["quarantine"])
+            self.assertEqual((destination / "SKILL.md").read_text(encoding="utf-8"), "previous\n")
+            self.assertTrue((quarantine / "unsafe-link").is_symlink())
+            self.assertIn("unavailable", rollback["reason"])
+            self.assertTrue(rollback["restored_previous"])
+            self.assertEqual(intent["phase"], "rolled-back")
+            self.assertFalse(Path(intent["backup"]).exists())
+            with self.assertRaisesRegex(PipelineError, "start a new governed run"):
+                atomic_install(root / "checkout", "1" * 40, run_dir, config, canary=poison_then_fail)
+
     def test_atomic_install_recovers_after_backup_move_and_reruns_canary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -608,7 +720,8 @@ class PromotionAutomationTest(unittest.TestCase):
                 },
             }
             run_dir = root / "run"
-            run_dir.mkdir()
+            run_dir.mkdir(mode=0o700)
+            run_dir.chmod(0o700)
             atomic_write_json(run_dir / "installation-record.json", {"status": "installed", "merge_commit": "d" * 40})
             with self.assertRaises(PipelineError):
                 validate_installation_receipt(
@@ -665,7 +778,10 @@ class PromotionAutomationTest(unittest.TestCase):
             manifest = {**body, "manifest_sha256": sha256_json(body)}
             config = {
                 "candidate": {"name": "explore-approaches", "version": "explore-approaches-v0.1.0"},
-                "approval_verification": {"namespace": "codex-skill-promotion"},
+                "approval_verification": {
+                    "namespace": "codex-skill-promotion",
+                    "expected_identity": "Named Human",
+                },
                 "promotion": {
                     "repository_url": "https://github.com/tedahn/dynamic-prompt-engineering.git",
                     "repository_slug": "tedahn/dynamic-prompt-engineering",
@@ -680,6 +796,7 @@ class PromotionAutomationTest(unittest.TestCase):
                 "rubric_sha256": "c" * 64,
                 "config_sha256": sha256_json(config),
                 "candidate_manifest_sha256": manifest["manifest_sha256"],
+                "lifecycle_executables_sha256": "d" * 64,
             }
             atomic_write_json(plan_path, {**plan_body, "plan_sha256": sha256_json(plan_body)})
             approval = {
@@ -694,11 +811,15 @@ class PromotionAutomationTest(unittest.TestCase):
                 "evidence": {
                     "evaluation_summary_sha256": sha256_file(summary_path),
                     "evidence_manifest_sha256": sha256_file(evidence_manifest_path),
+                    "blind_key_commitment": "e" * 64,
+                    "blind_map_path": "private/grading/blind-map.jsonl",
+                    "blind_map_sha256": "9" * 64,
                     "holdout_manifest_sha256": sha256_file(holdout_path),
                     "protocol_sha256": "b" * 64,
                     "rubric_sha256": "c" * 64,
                     "rollback_evidence_sha256": sha256_file(rollback_path),
                     "config_sha256": sha256_json(config),
+                    "lifecycle_executables_sha256": "d" * 64,
                 },
                 "target": {
                     "repository_url": config["promotion"]["repository_url"],
@@ -710,22 +831,47 @@ class PromotionAutomationTest(unittest.TestCase):
                 "permissions": ["push_branch", "create_pr", "merge_reviewed_pr", "install_root_skill", "run_canary", "rollback"],
                 "thresholds_met": True,
                 "accepted_exceptions": [],
-                "signature": {"algorithm": "ssh-keygen-y", "identity": "human", "namespace": "codex-skill-promotion", "value": base64.b64encode(b"signature" * 8).decode()},
+                "signature": {"algorithm": "ssh-keygen-y", "identity": "Named Human", "namespace": "codex-skill-promotion", "value": base64.b64encode(b"signature" * 8).decode()},
             }
-            validate_approval(approval, config, manifest, summary_path, holdout_path, rollback_path, signature_verifier=lambda *_: None)
-            approval["candidate"]["base_commit"] = "d" * 40
-            with self.assertRaises(PipelineError):
+            with patch(
+                "automation.promotion.verify_evidence_manifest",
+                return_value={
+                    "blind_key_commitment": "e" * 64,
+                    "blind_map_sha256": "9" * 64,
+                    "artifacts": {
+                        "blind_map": {
+                            "path": "private/grading/blind-map.jsonl",
+                            "sha256": "9" * 64,
+                        }
+                    },
+                },
+            ):
                 validate_approval(approval, config, manifest, summary_path, holdout_path, rollback_path, signature_verifier=lambda *_: None)
-            approval["candidate"]["base_commit"] = "a" * 40
-            config["evaluation"] = {"trials": 999}
-            with self.assertRaises(PipelineError):
-                validate_approval(approval, config, manifest, summary_path, holdout_path, rollback_path, signature_verifier=lambda *_: None)
+                approval["evidence"]["blind_map_path"] = "../blind-map.jsonl"
+                with self.assertRaisesRegex(PipelineError, "evidence hashes"):
+                    validate_approval(approval, config, manifest, summary_path, holdout_path, rollback_path, signature_verifier=lambda *_: None)
+                approval["evidence"]["blind_map_path"] = "private/grading/blind-map.jsonl"
+                approval["evidence"]["blind_map_sha256"] = "0" * 64
+                with self.assertRaisesRegex(PipelineError, "evidence hashes"):
+                    validate_approval(approval, config, manifest, summary_path, holdout_path, rollback_path, signature_verifier=lambda *_: None)
+                approval["evidence"]["blind_map_sha256"] = "9" * 64
+                approval["approved_by"] = "Different Human"
+                with self.assertRaisesRegex(PipelineError, "verified approval identity"):
+                    validate_approval(approval, config, manifest, summary_path, holdout_path, rollback_path, signature_verifier=lambda *_: None)
+                approval["approved_by"] = "Named Human"
+                approval["candidate"]["base_commit"] = "d" * 40
+                with self.assertRaises(PipelineError):
+                    validate_approval(approval, config, manifest, summary_path, holdout_path, rollback_path, signature_verifier=lambda *_: None)
+                approval["candidate"]["base_commit"] = "a" * 40
+                config["evaluation"] = {"trials": 999}
+                with self.assertRaises(PipelineError):
+                    validate_approval(approval, config, manifest, summary_path, holdout_path, rollback_path, signature_verifier=lambda *_: None)
 
     def test_pr_and_release_records_are_immutable_and_provenance_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             run_dir = Path(temporary)
             prepared = {"base_commit": "a" * 40, "head_commit": "b" * 40, "staged_paths": ["skills/explore-approaches/SKILL.md"]}
-            opened = {"pr_url": "https://github.com/example/repo/pull/1", "head_commit": "b" * 40, "opened_at": "2026-07-30T12:00:00Z"}
+            opened = {"pr_url": "https://github.com/example/repo/pull/1", "head_commit": "b" * 40, "opened_at": "2026-07-30T12:00:00Z", "github_actor": "automation"}
             pr_record = build_pr_record(
                 prepared,
                 opened,
@@ -747,7 +893,9 @@ class PromotionAutomationTest(unittest.TestCase):
                     "approved_reviewers": ["reviewer"],
                     "successful_checks": ["tests"],
                     "verified_at": "2026-07-30T13:01:00Z",
+                    "github_actor": "automation",
                 },
+                "github_actor": "automation",
             }
             release = build_release_record(written_pr, merged)
             self.assertEqual(release["pr_record_sha256"], written_pr["record_sha256"])
@@ -771,6 +919,7 @@ class PromotionAutomationTest(unittest.TestCase):
                     "state": "APPROVED",
                     "submittedAt": "2026-07-30T12:00:00Z",
                     "author": {"login": "reviewer"},
+                    "commit": {"oid": "b" * 40},
                 }
             ],
             "statusCheckRollup": [
@@ -788,7 +937,9 @@ class PromotionAutomationTest(unittest.TestCase):
             }
         }
         completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(snapshot), stderr="")
-        with patch("automation.promotion.run_command", return_value=completed):
+        with patch("automation.promotion.verify_github_actor", return_value="automation"), patch(
+            "automation.promotion.run_command", return_value=completed
+        ):
             merged = merge_reviewed_pr(snapshot["url"], "b" * 40, config)
         self.assertEqual(merged["merged_at"], snapshot["mergedAt"])
         open_snapshot = {
@@ -803,16 +954,23 @@ class PromotionAutomationTest(unittest.TestCase):
             subprocess.CompletedProcess([], 0, stdout="", stderr=""),
             completed,
         ]
-        with patch("automation.promotion.run_command", side_effect=command_results) as run:
+        with patch("automation.promotion.verify_github_actor", return_value="automation"), patch(
+            "automation.promotion.run_command", side_effect=command_results
+        ) as run:
             newly_merged = merge_reviewed_pr(snapshot["url"], "b" * 40, config)
         self.assertEqual(newly_merged["merge_commit"], snapshot["mergeCommit"]["oid"])
         self.assertEqual(run.call_count, 3)
         failed = {**snapshot, "statusCheckRollup": [{"__typename": "CheckRun", "name": "tests", "status": "COMPLETED", "conclusion": "FAILURE"}]}
-        with patch("automation.promotion.run_command", return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(failed), stderr="")):
+        with patch("automation.promotion.verify_github_actor", return_value="automation"), patch(
+            "automation.promotion.run_command",
+            return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(failed), stderr=""),
+        ):
             with self.assertRaises(PipelineError):
                 merge_reviewed_pr(snapshot["url"], "b" * 40, config)
         unrelated_success = {**config, "promotion": {**config["promotion"], "required_status_checks": ["required-policy"]}}
-        with patch("automation.promotion.run_command", return_value=completed):
+        with patch("automation.promotion.verify_github_actor", return_value="automation"), patch(
+            "automation.promotion.run_command", return_value=completed
+        ):
             with self.assertRaisesRegex(PipelineError, "required successful checks"):
                 merge_reviewed_pr(snapshot["url"], "b" * 40, unrelated_success)
         for rejected_login in ("untrusted-outsider", "pull-author", "automation"):
@@ -823,11 +981,12 @@ class PromotionAutomationTest(unittest.TestCase):
                         "state": "APPROVED",
                         "submittedAt": "2026-07-30T12:00:00Z",
                         "author": {"login": rejected_login},
+                        "commit": {"oid": "b" * 40},
                     }
                 ],
             }
             with self.subTest(rejected_login=rejected_login):
-                with patch(
+                with patch("automation.promotion.verify_github_actor", return_value="automation"), patch(
                     "automation.promotion.run_command",
                     return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(rejected), stderr=""),
                 ):
@@ -841,20 +1000,41 @@ class PromotionAutomationTest(unittest.TestCase):
                     "state": "APPROVED",
                     "submittedAt": "2026-07-30T12:00:00Z",
                     "author": {"login": "reviewer"},
+                    "commit": {"oid": "b" * 40},
                 },
                 {
                     "state": "CHANGES_REQUESTED",
                     "submittedAt": "2026-07-30T12:05:00Z",
                     "author": {"login": "reviewer"},
+                    "commit": {"oid": "b" * 40},
                 },
             ],
         }
-        with patch(
+        with patch("automation.promotion.verify_github_actor", return_value="automation"), patch(
             "automation.promotion.run_command",
             return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(superseded), stderr=""),
         ):
             with self.assertRaisesRegex(PipelineError, "allowed independent reviewer"):
                 merge_reviewed_pr(snapshot["url"], "b" * 40, config)
+
+        for review_commit in ({"oid": "a" * 40}, None):
+            review = {
+                "state": "APPROVED",
+                "submittedAt": "2026-07-30T12:00:00Z",
+                "author": {"login": "reviewer"},
+            }
+            if review_commit is not None:
+                review["commit"] = review_commit
+            invalid_head_review = {**snapshot, "reviews": [review]}
+            with self.subTest(review_commit=review_commit):
+                with patch("automation.promotion.verify_github_actor", return_value="automation"), patch(
+                    "automation.promotion.run_command",
+                    return_value=subprocess.CompletedProcess(
+                        [], 0, stdout=json.dumps(invalid_head_review), stderr=""
+                    ),
+                ):
+                    with self.assertRaisesRegex(PipelineError, "allowed independent reviewer"):
+                        merge_reviewed_pr(snapshot["url"], "b" * 40, config)
 
         placeholder_policy = {
             **config,
@@ -867,6 +1047,13 @@ class PromotionAutomationTest(unittest.TestCase):
         with patch("automation.promotion.run_command", return_value=completed):
             with self.assertRaisesRegex(PipelineError, "non-placeholder GitHub automation actor"):
                 merge_reviewed_pr(snapshot["url"], "b" * 40, placeholder_policy)
+
+        mismatched = subprocess.CompletedProcess([], 0, stdout="reviewer\n", stderr="")
+        with patch("automation.promotion.run_command", return_value=mismatched) as run:
+            with self.assertRaisesRegex(PipelineError, "Active GitHub credential"):
+                merge_reviewed_pr(snapshot["url"], "b" * 40, config)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0], ["gh", "api", "user", "--jq", ".login"])
 
     def test_rollback_rehearsal_produces_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

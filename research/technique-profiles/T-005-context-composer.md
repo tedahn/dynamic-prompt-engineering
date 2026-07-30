@@ -23,7 +23,7 @@ The evaluation candidate requires source plus typed trust, sensitivity, and cont
 ## Evidence map
 
 - Anthropic documents a smallest-high-signal-context principle and techniques such as just-in-time exploration and compaction (`C-004`, `S-008`).
-- RAG and Lost in the Middle supply primary evidence for retrieval and position sensitivity on their tested systems (`C-016`, `S-029`, `S-030`).
+- RAG and Lost in the Middle supply primary evidence for retrieval and position sensitivity on their tested systems (`C-019`, `S-028`, `S-029`).
 - Anthropic reports lower retrieval failure from contextualized chunks and reranking on its tested corpora, with explicit latency/cost tradeoffs; transfer to Codex skill context is untested (`C-040`, `S-053`).
 - LongMemEval separates extraction, multi-session reasoning, temporal reasoning, knowledge updates, and abstention; LongMemEval-V2 directly evaluates context gathering from very large agent histories (`C-038`, `C-039`, `S-054`, `S-056`).
 - Chroma's direct technical report finds nonuniform degradation from length and distractors across its tested model/task suite, reinforcing that nominal context capacity is not a reliability guarantee (`C-037`, `S-055`).

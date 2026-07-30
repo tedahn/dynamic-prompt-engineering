@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from automation.core import PipelineError, assess_summary, atomic_write_json, build_candidate_manifest, load_json, sha256_file, sha256_json
-from automation.evaluation import _computed_grade_score, build_blind_bundle, build_holdout_manifest_template, build_summary, freeze_plan, holdout_manifest_payload, invoke_adapter, read_jsonl, run_provisional_grading, run_subjects, write_jsonl
+from automation.core import PipelineError, assess_summary, atomic_write_json, build_candidate_manifest, canonical_json_bytes, load_json, sha256_file, sha256_json
+from automation.evaluation import _blind_cell_binding, _blind_hmac, _computed_grade_score, build_blind_bundle, build_holdout_manifest_template, build_summary, freeze_plan, holdout_manifest_payload, invoke_adapter, read_jsonl, run_provisional_grading, run_subjects, verify_evidence_manifest, write_jsonl
 
 
 FAKE_ADAPTER = r'''from __future__ import annotations
@@ -134,7 +137,6 @@ class EvaluationAutomationTest(unittest.TestCase):
                     "trials_per_task": 3,
                     "critical_gate_ids": hard_gates[:4],
                     "plan_seed": 1,
-                    "blind_seed": 2,
                     "bootstrap_seed": 3,
                     "bootstrap_resamples": 200,
                     "subject_adapter_argv": [str(Path(sys.executable).resolve()), str(adapter), "{input}", "{output}"],
@@ -143,10 +145,12 @@ class EvaluationAutomationTest(unittest.TestCase):
                         "provider_id": "synthetic-provider",
                         "model_id": "synthetic-model",
                         "settings": {"temperature": 0},
-                        "artifact_paths": [str(adapter)],
+                        "entrypoint_path": str(adapter),
+                        "dependency_paths": [],
                     },
                     "grader_replicates": 2,
-                    "grader_adapter_argv": [sys.executable, str(adapter), "{input}", "{output}"],
+                    "grader_adapter_argv": [str(Path(sys.executable).resolve()), str(adapter), "{input}", "{output}"],
+                    "canary_adapter_argv": [str(Path(sys.executable).resolve()), str(adapter), "{input}", "{output}"],
                     "timeout_ms": 10000,
                     "max_transient_retries": 2,
                     "thresholds": {
@@ -179,22 +183,54 @@ class EvaluationAutomationTest(unittest.TestCase):
                     "csv_record_allowlist": {},
                     "markdown_record_allowlist": {},
                 },
+                "installation": {
+                    "source_mode": "local-test",
+                    "validator_argv": [str(Path(sys.executable).resolve()), str(adapter), "{input}", "{output}"],
+                },
             }
             candidate_manifest = build_candidate_manifest(repo, config)
             holdout_manifest = root / "holdout-manifest.signed.json"
-            holdout_template = build_holdout_manifest_template(
-                repo,
-                holdout,
-                config,
-                candidate_manifest,
-                manifest_id="HM-synthetic-001",
-                created_at="2026-07-30T12:00:00Z",
-            )
+            previous_umask = os.umask(0o777)
+            try:
+                holdout_template = build_holdout_manifest_template(
+                    repo,
+                    holdout,
+                    config,
+                    candidate_manifest,
+                    run_dir=run,
+                    manifest_id="HM-synthetic-001",
+                    created_at="2026-07-30T12:00:00Z",
+                )
+            finally:
+                os.umask(previous_umask)
+            key_path = run / "private/grading/blind-key.bin"
+            self.assertNotIn("blind_seed", config["evaluation"])
+            self.assertEqual(stat.S_IMODE(run.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE((run / "private").stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE((run / "private/grading").stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
+            self.assertEqual(len(key_path.read_bytes()), 32)
+            self.assertEqual(holdout_template["blind_key_commitment"], sha256_file(key_path))
             self.assertEqual(holdout_template["signature"]["value"], "")
             unsigned_payload = holdout_manifest_payload(holdout_template)
             holdout_template["signature"]["value"] = "synthetic-test-signature"
             self.assertEqual(holdout_manifest_payload(holdout_template), unsigned_payload)
             atomic_write_json(holdout_manifest, holdout_template)
+            signed_blind_key = (run / "private/grading/blind-key.bin").read_bytes()
+
+            def install_signed_blind_key(target_run: Path) -> None:
+                target_run.mkdir(mode=0o700, exist_ok=True)
+                target_run.chmod(0o700)
+                private_root = target_run / "private"
+                grading_root = private_root / "grading"
+                private_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+                private_root.chmod(0o700)
+                grading_root.mkdir(mode=0o700, exist_ok=True)
+                grading_root.chmod(0o700)
+                key_path = grading_root / "blind-key.bin"
+                key_path.write_bytes(signed_blind_key)
+                key_path.chmod(0o600)
+
             verified: list[str] = []
 
             def verify_test_signature(manifest: dict, live_config: dict) -> None:
@@ -203,6 +239,21 @@ class EvaluationAutomationTest(unittest.TestCase):
 
             def reject_test_signature(manifest: dict, live_config: dict) -> None:
                 raise PipelineError("synthetic invalid holdout signature")
+
+            missing_before_freeze = root / "missing-key-before-freeze"
+            missing_before_freeze.mkdir(mode=0o700)
+            with self.assertRaisesRegex(PipelineError, "Private grading directory is missing"):
+                freeze_plan(
+                    repo,
+                    missing_before_freeze,
+                    holdout,
+                    holdout_manifest,
+                    config,
+                    candidate_manifest,
+                    base_commit="a" * 40,
+                    signature_verifier=verify_test_signature,
+                )
+            self.assertFalse((missing_before_freeze / "private/grading/blind-key.bin").exists())
 
             with self.assertRaisesRegex(PipelineError, "canonical manifest_sha256"):
                 freeze_plan(
@@ -217,6 +268,7 @@ class EvaluationAutomationTest(unittest.TestCase):
                 )
 
             with self.assertRaisesRegex(PipelineError, "invalid holdout signature"):
+                install_signed_blind_key(root / "signature-rejected-run")
                 freeze_plan(
                     repo,
                     root / "signature-rejected-run",
@@ -234,6 +286,7 @@ class EvaluationAutomationTest(unittest.TestCase):
             mismatched["holdout_sha256"] = "0" * 64
             atomic_write_json(mismatched_manifest, mismatched)
             with self.assertRaisesRegex(PipelineError, "holdout_sha256 does not match"):
+                install_signed_blind_key(root / "binding-rejected-run")
                 freeze_plan(
                     repo,
                     root / "binding-rejected-run",
@@ -249,7 +302,9 @@ class EvaluationAutomationTest(unittest.TestCase):
             source_manifest_bytes = holdout_manifest.read_bytes()
             interrupted_run = root / "interrupted-freeze-run"
             interrupted_run.mkdir()
+            install_signed_blind_key(interrupted_run)
             (interrupted_run / "holdout-manifest.json").write_bytes(source_manifest_bytes)
+            (interrupted_run / "holdout-manifest.json").chmod(0o600)
             recovered_plan = freeze_plan(
                 repo,
                 interrupted_run,
@@ -286,6 +341,40 @@ class EvaluationAutomationTest(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "signed deterministic design"):
                 run_subjects(repo, run, config)
             (run / "plan.json").write_bytes(plan_bytes)
+
+            key_bytes = key_path.read_bytes()
+            key_path.write_bytes(b"R" * 32)
+            key_path.chmod(0o600)
+            with self.assertRaisesRegex(PipelineError, "does not match the frozen commitment"):
+                run_subjects(repo, run, config)
+            resealed_plan = load_json(run / "plan.json")
+            resealed_plan["blind_key_commitment"] = sha256_file(key_path)
+            resealed_plan["plan_sha256"] = sha256_json(
+                {key: value for key, value in resealed_plan.items() if key != "plan_sha256"}
+            )
+            atomic_write_json(run / "plan.json", resealed_plan)
+            with self.assertRaisesRegex(PipelineError, "Signed holdout manifest blind_key_commitment"):
+                run_subjects(repo, run, config)
+            key_path.write_bytes(key_bytes)
+            key_path.chmod(0o600)
+            (run / "plan.json").write_bytes(plan_bytes)
+
+            key_path.chmod(0o644)
+            with self.assertRaisesRegex(PipelineError, "blind key permissions must be 0600"):
+                run_subjects(repo, run, config)
+            key_path.chmod(0o600)
+            missing_key = root / "missing-key-backup"
+            key_path.replace(missing_key)
+            with self.assertRaisesRegex(PipelineError, "blind key is missing or unsafe"):
+                run_subjects(repo, run, config)
+            self.assertFalse(key_path.exists())
+            key_path.symlink_to(missing_key)
+            with self.assertRaisesRegex(PipelineError, "blind key is missing or unsafe"):
+                run_subjects(repo, run, config)
+            key_path.unlink()
+            missing_key.replace(key_path)
+            key_path.chmod(0o600)
+
             first = run_subjects(repo, run, config)
             self.assertEqual(first, {"completed": 144, "failed": 0, "resumed": 0})
             second = run_subjects(repo, run, config)
@@ -311,10 +400,39 @@ class EvaluationAutomationTest(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "candidate manifest changed"):
                 run_subjects(repo, run, config)
             atomic_write_json(run / "candidate-manifest.json", candidate_manifest)
+            with patch("automation.evaluation._blind_hmac", return_value="f" * 64):
+                with self.assertRaisesRegex(PipelineError, "identifiers or ordering tokens are duplicated"):
+                    build_blind_bundle(run, config)
             bundle = build_blind_bundle(run, config)
             self.assertEqual(bundle["records"], 36)
             self.assertEqual(bundle["candidates"], 144)
-            self.assertTrue(all("arm" not in candidate for packet in read_jsonl(run / "grading/blind-packet.jsonl") for candidate in packet["candidates"]))
+            map_path = run / "private/grading/blind-map.jsonl"
+            packet_path = run / "grading/blind-packet.jsonl"
+            self.assertEqual(bundle["blind_key_commitment"], plan["blind_key_commitment"])
+            self.assertEqual(stat.S_IMODE(map_path.stat().st_mode), 0o600)
+            self.assertEqual(plan["blind_key_commitment"], sha256_file(key_path))
+            packet_bytes_before = packet_path.read_bytes()
+            map_bytes_before = map_path.read_bytes()
+            resumed_bundle = build_blind_bundle(run, config)
+            self.assertEqual(resumed_bundle, bundle)
+            self.assertEqual(packet_path.read_bytes(), packet_bytes_before)
+            self.assertEqual(map_path.read_bytes(), map_bytes_before)
+            packets = read_jsonl(packet_path)
+            self.assertTrue(all("arm" not in candidate for packet in packets for candidate in packet["candidates"]))
+            public_packet_text = json.dumps(packets, sort_keys=True)
+            for forbidden in (
+                "blind_key_commitment",
+                "blind_map_sha256",
+                "blind-key.bin",
+                "blind-map.jsonl",
+                key_path.read_bytes().hex(),
+            ):
+                self.assertNotIn(forbidden, public_packet_text)
+            sample_cell = plan["cells"][0]
+            self.assertNotEqual(
+                _blind_hmac(key_path.read_bytes(), "candidate-id", _blind_cell_binding(plan, sample_cell)),
+                _blind_hmac(b"P" * 32, "candidate-id", _blind_cell_binding(plan, sample_cell)),
+            )
             first_grading = run_provisional_grading(run, config)
             self.assertEqual(first_grading, {"grades": 72, "failures": 0, "resumed": 0})
             second_grading = run_provisional_grading(run, config)
@@ -328,6 +446,17 @@ class EvaluationAutomationTest(unittest.TestCase):
                     for row in provisional
                 )
             )
+            grader_request_path = next((run / "grading/attempts").rglob("request.json"))
+            grader_request_text = grader_request_path.read_text(encoding="utf-8")
+            for forbidden in (
+                "blind_key_commitment",
+                "blind_map_sha256",
+                "blind-key.bin",
+                "blind-map.jsonl",
+                "evidence-manifest",
+                key_path.read_bytes().hex(),
+            ):
+                self.assertNotIn(forbidden, grader_request_text)
             provisional_target = (
                 run / "grading" / "provisional" / provisional[0]["packet_id"]
                 / f"replicate-{provisional[0]['replicate']}.json"
@@ -345,7 +474,7 @@ class EvaluationAutomationTest(unittest.TestCase):
 
             grades = []
             mappings_by_packet = {}
-            for mapping in read_jsonl(run / "private/blind-map.jsonl"):
+            for mapping in read_jsonl(run / "private/grading/blind-map.jsonl"):
                 mappings_by_packet.setdefault(mapping["packet_id"], []).append(mapping)
             for packet_id, mappings in mappings_by_packet.items():
                 by_arm = {mapping["arm"]: mapping for mapping in mappings}
@@ -392,29 +521,99 @@ class EvaluationAutomationTest(unittest.TestCase):
                     "adjudication_complete": True,
                     "integrity_valid": True,
                     "contamination_detected": False,
+                    "signature": {
+                        "algorithm": "ssh-keygen-y",
+                        "identity": "Named Human",
+                        "namespace": "codex-skill-human-review",
+                        "value": "synthetic-test-signature",
+                    },
                 },
             )
-            packet_path = run / "grading/blind-packet.jsonl"
+            verify_review_signature = lambda *_args: None
             packet_bytes = packet_path.read_bytes()
             tampered_packets = read_jsonl(packet_path)
             tampered_packets[0]["candidates"][0]["output"] = {"text": "forged blind output"}
             write_jsonl(packet_path, tampered_packets)
             with self.assertRaisesRegex(PipelineError, "Blind packet differs from deterministic reconstruction"):
-                build_summary(run, config, final_grades, review)
+                build_summary(
+                    run,
+                    config,
+                    final_grades,
+                    review,
+                    review_signature_verifier=verify_review_signature,
+                )
             packet_path.write_bytes(packet_bytes)
-            map_path = run / "private/blind-map.jsonl"
             map_bytes = map_path.read_bytes()
             tampered_map = read_jsonl(map_path)
             tampered_map[0]["arm"] = "B00_RAW" if tampered_map[0]["arm"] != "B00_RAW" else "C01_EXPLORE"
             write_jsonl(map_path, tampered_map)
+            map_path.chmod(0o600)
             with self.assertRaisesRegex(PipelineError, "Private blind map differs from deterministic reconstruction"):
-                build_summary(run, config, final_grades, review)
+                build_summary(
+                    run,
+                    config,
+                    final_grades,
+                    review,
+                    review_signature_verifier=verify_review_signature,
+                )
             map_path.write_bytes(map_bytes)
-            summary = build_summary(run, config, final_grades, review)
+            map_path.chmod(0o600)
+            summary = build_summary(
+                run,
+                config,
+                final_grades,
+                review,
+                review_signature_verifier=verify_review_signature,
+            )
             evidence_manifest = load_json(run / "evidence-manifest.json")
             self.assertEqual(len(evidence_manifest["cells"]), 144)
             self.assertTrue(all(cell["attempts"] for cell in evidence_manifest["cells"]))
+            self.assertEqual(evidence_manifest["blind_key_commitment"], plan["blind_key_commitment"])
+            self.assertEqual(evidence_manifest["blind_packet_sha256"], sha256_file(packet_path))
+            self.assertEqual(evidence_manifest["blind_map_sha256"], sha256_file(map_path))
+            self.assertEqual(
+                evidence_manifest["artifacts"]["blind_map"]["path"],
+                "private/grading/blind-map.jsonl",
+            )
+            self.assertEqual(summary["evidence"]["blind_key_commitment"], plan["blind_key_commitment"])
+            self.assertEqual(summary["evidence"]["blind_map_sha256"], sha256_file(map_path))
+            self.assertEqual(summary["evidence"]["blind_map_path"], "private/grading/blind-map.jsonl")
             self.assertEqual(summary["evidence"]["evidence_manifest_sha256"], sha256_file(run / "evidence-manifest.json"))
+            self.assertEqual(verify_evidence_manifest(run, config), evidence_manifest)
+
+            raw_relative = evidence_manifest["cells"][0]["attempts"][0]["raw_response"]["path"]
+            raw_artifact = run / raw_relative
+            raw_bytes = raw_artifact.read_bytes()
+            raw_artifact.write_bytes(raw_bytes + b" ")
+            with self.assertRaisesRegex(PipelineError, "Evidence artifact hash or path mismatch"):
+                verify_evidence_manifest(run, config)
+            raw_artifact.write_bytes(raw_bytes)
+            raw_artifact.unlink()
+            with self.assertRaisesRegex(PipelineError, "missing or escapes"):
+                verify_evidence_manifest(run, config)
+            raw_artifact.write_bytes(raw_bytes)
+            raw_artifact.chmod(0o600)
+
+            evidence_path = run / "evidence-manifest.json"
+            evidence_bytes = evidence_path.read_bytes()
+            tampered_commitment = load_json(evidence_path)
+            tampered_commitment["blind_key_commitment"] = "0" * 64
+            tampered_commitment["manifest_sha256"] = sha256_json(
+                {key: value for key, value in tampered_commitment.items() if key != "manifest_sha256"}
+            )
+            evidence_path.write_bytes(canonical_json_bytes(tampered_commitment) + b"\n")
+            with self.assertRaisesRegex(PipelineError, "differs from deterministic reconstruction"):
+                verify_evidence_manifest(run, config)
+            evidence_path.write_bytes(evidence_bytes)
+            duplicate = load_json(evidence_path)
+            duplicate["cells"][0]["attempts"][0]["request"] = duplicate["cells"][0]["result"]
+            duplicate["manifest_sha256"] = sha256_json(
+                {key: value for key, value in duplicate.items() if key != "manifest_sha256"}
+            )
+            evidence_path.write_bytes(canonical_json_bytes(duplicate) + b"\n")
+            with self.assertRaisesRegex(PipelineError, "duplicate artifact paths"):
+                verify_evidence_manifest(run, config)
+            evidence_path.write_bytes(evidence_bytes)
             self.assertEqual(assess_summary(summary, config)["classification"], "promotable")
 
 
