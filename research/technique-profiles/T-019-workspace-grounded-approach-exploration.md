@@ -33,7 +33,7 @@ Watch for cosmetic option variation, invented workspace facts, unlabeled numeric
 
 ## Evaluation readiness
 
-The intervention, baselines, development fixtures, hard gates, frozen thresholds, rollback, and custody/promotion schemas are specified in `research/evaluations/explore-approaches/`. A provider-neutral lifecycle is tested model-free through signed arm/runtime custody, raw-artifact verification, deterministic dimension and task-cluster analysis, post-result approval verification, scoped exact-base materialization, canonical reviewed-merge recovery, full-manifest verification, exact-ref helper staging, crash-recoverable installation, active-tree verification, fresh canary, and rollback. This establishes automation mechanics only; fresh held-out evidence and post-evaluation human approval remain incomplete.
+The intervention, baselines, development fixtures, hard gates, frozen thresholds, rollback, and custody/promotion schemas are specified in `research/evaluations/explore-approaches/`. A provider-neutral lifecycle is tested model-free through signed plan/arm/runtime custody, private HMAC blinding, raw-artifact and blind-packet reconstruction, deterministic dimension and task-cluster analysis, evidence-manifest-bound post-result approval, scoped exact-base materialization, allowlisted exact-head reviewed-merge recovery, full-manifest verification, exact-ref helper staging, crash-recoverable installation, active-tree verification, fresh canary, and verified rollback. This establishes automation mechanics only; fresh held-out evidence, hostile same-UID grader isolation, and post-evaluation human approval remain incomplete.
 
 ## Skill recommendation
 
