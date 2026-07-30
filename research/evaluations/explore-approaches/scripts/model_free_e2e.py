@@ -201,6 +201,8 @@ def run(output: Path) -> dict[str, object]:
         template_config["evaluation"]["subject_adapter_argv"] = adapter_argv
         template_config["evaluation"]["grader_adapter_argv"] = adapter_argv
         template_config["evaluation"]["canary_adapter_argv"] = adapter_argv
+        template_config["evaluation"]["canary_entrypoint_path"] = str(adapter.resolve())
+        template_config["evaluation"]["canary_dependency_paths"] = []
         template_config["evaluation"]["subject_runtime"] = {
             "adapter_id": "model-free-adapter",
             "provider_id": "model-free-provider",
@@ -210,7 +212,13 @@ def run(output: Path) -> dict[str, object]:
             "dependency_paths": [],
         }
         template_config["installation"]["source_mode"] = "local-test"
-        template_config["installation"]["validator_argv"] = adapter_argv
+        template_config["installation"]["validator_argv"] = [
+            str(Path(sys.executable).resolve()),
+            str(adapter.resolve()),
+            "{skill}",
+        ]
+        template_config["installation"]["validator_entrypoint_path"] = str(adapter.resolve())
+        template_config["installation"]["validator_dependency_paths"] = []
         holdout = temporary_root / "holdout.jsonl"
         rubric = json.loads((REPO_ROOT / template_config["candidate"]["rubric_path"]).read_text(encoding="utf-8"))
         domains = list(template_config["evaluation"]["required_holdout_domains"])

@@ -11,12 +11,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from automation.core import PipelineError, build_candidate_manifest, load_config
+from automation.core import PipelineError, atomic_write_json, build_candidate_manifest, load_config
 from automation.evaluation import (
+    _command_binding,
     _cluster_interval,
     _subject_runtime_identity,
     _verify_attempt_artifacts,
     invoke_adapter,
+    lifecycle_executable_bindings,
+    verify_lifecycle_executable_binding,
     verify_human_review_ssh_signature,
 )
 
@@ -104,6 +107,197 @@ class AdversarialAutomationTest(unittest.TestCase):
             dependency.write_text("VERSION = 2\n", encoding="utf-8")
             dependency_after = _subject_runtime_identity(dependency_config)
             self.assertNotEqual(dependency_before["sha256"], dependency_after["sha256"])
+
+    def test_lifecycle_binding_hashes_absolute_entrypoint_and_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            entrypoint = root / "validator.py"
+            dependency_root = root / "dependencies"
+            dependency_root.mkdir()
+            dependency = dependency_root / "policy.py"
+            entrypoint.write_text("print('v1')\n", encoding="utf-8")
+            dependency.write_text("VERSION = 1\n", encoding="utf-8")
+            argv = [str(Path(sys.executable).resolve()), str(entrypoint), "{skill}"]
+            before = _command_binding(
+                "validator",
+                argv,
+                entrypoint_path=str(entrypoint),
+                dependency_paths=[str(dependency_root)],
+                allowed_placeholders=("{skill}",),
+            )
+            self.assertEqual(before["entrypoint"]["path"], str(entrypoint.resolve()))
+            self.assertEqual(before["dependencies"][0]["path"], str(dependency_root.resolve()))
+            entrypoint.write_text("print('v2')\n", encoding="utf-8")
+            after_entrypoint = _command_binding(
+                "validator",
+                argv,
+                entrypoint_path=str(entrypoint),
+                dependency_paths=[str(dependency_root)],
+                allowed_placeholders=("{skill}",),
+            )
+            self.assertNotEqual(before["sha256"], after_entrypoint["sha256"])
+            dependency.write_text("VERSION = 2\n", encoding="utf-8")
+            after_dependency = _command_binding(
+                "validator",
+                argv,
+                entrypoint_path=str(entrypoint),
+                dependency_paths=[str(dependency_root)],
+                allowed_placeholders=("{skill}",),
+            )
+            self.assertNotEqual(after_entrypoint["sha256"], after_dependency["sha256"])
+
+    def test_lifecycle_binding_rejects_relative_missing_and_symlink_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            entrypoint = root / "validator.py"
+            entrypoint.write_text("print('ok')\n", encoding="utf-8")
+            executable = str(Path(sys.executable).resolve())
+            with self.assertRaisesRegex(PipelineError, "absolute path"):
+                _command_binding(
+                    "validator",
+                    ["python3", str(entrypoint), "{skill}"],
+                    entrypoint_path=str(entrypoint),
+                    dependency_paths=[],
+                    allowed_placeholders=("{skill}",),
+                )
+            with self.assertRaisesRegex(PipelineError, "bare relative or unresolved"):
+                _command_binding(
+                    "validator",
+                    [executable, "validator.py", "{skill}"],
+                    entrypoint_path=str(entrypoint),
+                    dependency_paths=[],
+                    allowed_placeholders=("{skill}",),
+                )
+            with self.assertRaisesRegex(PipelineError, "missing|regular non-symlink"):
+                _command_binding(
+                    "validator",
+                    [executable, str(root / "missing.py"), "{skill}"],
+                    entrypoint_path=str(root / "missing.py"),
+                    dependency_paths=[],
+                    allowed_placeholders=("{skill}",),
+                )
+            linked_entrypoint = root / "linked.py"
+            linked_entrypoint.symlink_to(entrypoint)
+            with self.assertRaisesRegex(PipelineError, "regular non-symlink"):
+                _command_binding(
+                    "validator",
+                    [executable, str(linked_entrypoint), "{skill}"],
+                    entrypoint_path=str(linked_entrypoint),
+                    dependency_paths=[],
+                    allowed_placeholders=("{skill}",),
+                )
+            linked_executable = root / "linked-python"
+            linked_executable.symlink_to(executable)
+            with self.assertRaisesRegex(PipelineError, "regular non-symlink"):
+                _command_binding(
+                    "validator",
+                    [str(linked_executable), str(entrypoint), "{skill}"],
+                    entrypoint_path=str(entrypoint),
+                    dependency_paths=[],
+                    allowed_placeholders=("{skill}",),
+                )
+            linked_dependency = root / "linked-dependency.py"
+            linked_dependency.symlink_to(entrypoint)
+            with self.assertRaisesRegex(PipelineError, "missing or unsafe"):
+                _command_binding(
+                    "validator",
+                    [executable, str(entrypoint), "{skill}"],
+                    entrypoint_path=str(entrypoint),
+                    dependency_paths=[str(linked_dependency)],
+                    allowed_placeholders=("{skill}",),
+                )
+            with self.assertRaisesRegex(PipelineError, "missing or unsafe"):
+                _command_binding(
+                    "validator",
+                    [executable, str(entrypoint), "{skill}"],
+                    entrypoint_path=str(entrypoint),
+                    dependency_paths=[str(root / "missing-dependency.py")],
+                    allowed_placeholders=("{skill}",),
+                )
+
+    def test_lifecycle_recovery_rehashes_validator_and_canary_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            validator = root / "validator.py"
+            canary = root / "canary.py"
+            dependencies = root / "dependencies"
+            dependencies.mkdir()
+            dependency = dependencies / "policy.py"
+            validator.write_text("print('validator-v1')\n", encoding="utf-8")
+            canary.write_text("print('canary-v1')\n", encoding="utf-8")
+            dependency.write_text("POLICY = 1\n", encoding="utf-8")
+            executable = str(Path(sys.executable).resolve())
+            config = {
+                "evaluation": {
+                    "canary_adapter_argv": [
+                        executable,
+                        str(canary),
+                        "{input}",
+                        "{output}",
+                    ],
+                    "canary_entrypoint_path": str(canary),
+                    "canary_dependency_paths": [str(dependencies)],
+                },
+                "installation": {
+                    "source_mode": "local-test",
+                    "validator_argv": [executable, str(validator), "{skill}"],
+                    "validator_entrypoint_path": str(validator),
+                    "validator_dependency_paths": [str(dependencies)],
+                },
+            }
+            frozen = lifecycle_executable_bindings(config)
+            run_dir = root / "run"
+            atomic_write_json(run_dir / "frozen/lifecycle-executables.json", frozen)
+            atomic_write_json(
+                run_dir / "plan.json",
+                {"lifecycle_executables_sha256": frozen["sha256"]},
+            )
+            self.assertEqual(
+                verify_lifecycle_executable_binding(run_dir, config, "validator"),
+                frozen["commands"]["validator"],
+            )
+            validator.write_text("print('validator-v2')\n", encoding="utf-8")
+            with self.assertRaisesRegex(PipelineError, "changed after freeze"):
+                verify_lifecycle_executable_binding(run_dir, config, "validator")
+            validator.write_text("print('validator-v1')\n", encoding="utf-8")
+            dependency.write_text("POLICY = 2\n", encoding="utf-8")
+            with self.assertRaisesRegex(PipelineError, "changed after freeze"):
+                verify_lifecycle_executable_binding(run_dir, config, "canary")
+
+    def test_lifecycle_binding_rejects_module_inline_eval_and_unresolved_tokens(self) -> None:
+        executable = str(Path(sys.executable).resolve())
+        for argv in (
+            [executable, "-m", "validator", "{skill}"],
+            [executable, "-c", "print('pass')", "{skill}"],
+            [executable, "--eval", "pass", "{skill}"],
+            [executable, "--eval=pass", "{skill}"],
+            [executable, "-encodedcommand:AAAA", "{skill}"],
+        ):
+            with self.subTest(argv=argv):
+                with self.assertRaisesRegex(PipelineError, "module, inline, eval"):
+                    _command_binding(
+                        "validator",
+                        argv,
+                        entrypoint_path=executable,
+                        dependency_paths=[],
+                        allowed_placeholders=("{skill}",),
+                    )
+        with self.assertRaisesRegex(PipelineError, "bare relative or unresolved"):
+            _command_binding(
+                "validator",
+                [executable, "unresolved-token", "{skill}"],
+                entrypoint_path=executable,
+                dependency_paths=[],
+                allowed_placeholders=("{skill}",),
+            )
+        with self.assertRaisesRegex(PipelineError, "exact required placeholders"):
+            _command_binding(
+                "validator",
+                [executable, "{skill}", "{skill}"],
+                entrypoint_path=executable,
+                dependency_paths=[],
+                allowed_placeholders=("{skill}",),
+            )
 
     def test_candidate_manifest_excludes_unrelated_dirty_workspace_artifacts(self) -> None:
         repo_root = Path(__file__).resolve().parents[4]

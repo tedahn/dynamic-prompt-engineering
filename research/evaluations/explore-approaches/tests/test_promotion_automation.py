@@ -235,11 +235,14 @@ class PromotionAutomationTest(unittest.TestCase):
                 "installation": {
                     "source_mode": "installer",
                     "installer_script": str(helper),
+                    "installer_dependency_paths": [],
                     "skills_root": str(root / "root-skills"),
                     "skill_name": "explore-approaches",
                     "backup_directory": str(root / "backups"),
                     "quarantine_directory": str(root / "quarantine"),
                     "validator_argv": [str(Path(sys.executable).resolve()), str(helper), "{skill}"],
+                    "validator_entrypoint_path": str(helper),
+                    "validator_dependency_paths": [],
                 },
                 "evaluation": {
                     "canary_adapter_argv": [
@@ -247,7 +250,9 @@ class PromotionAutomationTest(unittest.TestCase):
                         str(helper),
                         "{input}",
                         "{output}",
-                    ]
+                    ],
+                    "canary_entrypoint_path": str(helper),
+                    "canary_dependency_paths": [],
                 },
             }
             bindings = lifecycle_executable_bindings(config)

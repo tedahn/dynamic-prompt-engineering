@@ -52,6 +52,8 @@
     "subject_adapter_argv": [],
     "grader_adapter_argv": [],
     "canary_adapter_argv": [],
+    "canary_entrypoint_path": "",
+    "canary_dependency_paths": [],
     "thresholds": {
       "critical_candidate_failures_max": 0,
       "other_hard_gate_pass_rate_min": 0.95,
@@ -130,8 +132,11 @@
     "skills_root": "~/.codex/skills",
     "skill_name": "explore-approaches",
     "installer_script": "~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py",
+    "installer_dependency_paths": [],
     "backup_directory": "~/.codex/skills/.backups",
     "quarantine_directory": "~/.codex/skills/.quarantine",
-    "validator_argv": []
+    "validator_argv": [],
+    "validator_entrypoint_path": "",
+    "validator_dependency_paths": []
   }
 }

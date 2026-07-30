@@ -151,6 +151,8 @@ class EvaluationAutomationTest(unittest.TestCase):
                     "grader_replicates": 2,
                     "grader_adapter_argv": [str(Path(sys.executable).resolve()), str(adapter), "{input}", "{output}"],
                     "canary_adapter_argv": [str(Path(sys.executable).resolve()), str(adapter), "{input}", "{output}"],
+                    "canary_entrypoint_path": str(adapter),
+                    "canary_dependency_paths": [],
                     "timeout_ms": 10000,
                     "max_transient_retries": 2,
                     "thresholds": {
@@ -185,7 +187,9 @@ class EvaluationAutomationTest(unittest.TestCase):
                 },
                 "installation": {
                     "source_mode": "local-test",
-                    "validator_argv": [str(Path(sys.executable).resolve()), str(adapter), "{input}", "{output}"],
+                    "validator_argv": [str(Path(sys.executable).resolve()), str(adapter), "{skill}"],
+                    "validator_entrypoint_path": str(adapter),
+                    "validator_dependency_paths": [],
                 },
             }
             candidate_manifest = build_candidate_manifest(repo, config)

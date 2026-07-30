@@ -388,6 +388,17 @@ def validate(repo_root: Path) -> dict[str, Any]:
         errors.append("pipeline config omits concrete subject entrypoint and dependency provenance fields")
     if "image_digest" in runtime or "artifact_paths" in runtime:
         errors.append("pipeline config permits unsupported declarative or ambiguous runtime provenance")
+    if not isinstance(evaluation.get("canary_entrypoint_path"), str) or not isinstance(
+        evaluation.get("canary_dependency_paths"), list
+    ):
+        errors.append("pipeline config omits concrete canary entrypoint and dependency provenance fields")
+    installation = config.get("installation", {})
+    if not isinstance(installation.get("validator_entrypoint_path"), str) or not isinstance(
+        installation.get("validator_dependency_paths"), list
+    ):
+        errors.append("pipeline config omits concrete validator entrypoint and dependency provenance fields")
+    if not isinstance(installation.get("installer_dependency_paths"), list):
+        errors.append("pipeline config omits installer dependency provenance fields")
     if not REQUIRED_CONTENT_SAFETY_GATES.issubset(set(evaluation.get("critical_gate_ids", []))):
         errors.append("pipeline config does not classify both content-safety gates as critical")
     if not {"security", "privacy"}.issubset(set(evaluation.get("required_holdout_domains", []))):

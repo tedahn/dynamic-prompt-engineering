@@ -252,7 +252,9 @@ def _command_binding(
     label: str,
     template: Any,
     *,
-    required_artifacts: Sequence[str] = (),
+    entrypoint_path: Any,
+    dependency_paths: Any = (),
+    allowed_placeholders: Sequence[str] = (),
 ) -> dict[str, Any]:
     if (
         not isinstance(template, list)
@@ -260,27 +262,87 @@ def _command_binding(
         or any(not isinstance(value, str) or not value for value in template)
     ):
         raise PipelineError(f"{label} argv is not configured")
-    executable = _safe_command_file(template[0], f"{label} executable", search_path=True)
+    executable = _safe_command_file(template[0], f"{label} executable")
+    entrypoint = _safe_command_file(str(entrypoint_path or ""), f"{label} entrypoint")
+    if not isinstance(dependency_paths, (list, tuple)) or any(
+        not isinstance(value, str) or not value.strip() for value in dependency_paths
+    ):
+        raise PipelineError(f"{label} dependency_paths must be an array of absolute paths")
+    placeholders = set(allowed_placeholders)
+    if any(
+        not isinstance(value, str)
+        or value not in {"{input}", "{output}", "{skill}"}
+        for value in placeholders
+    ):
+        raise PipelineError(f"{label} allowed placeholders are invalid")
+    forbidden_interpreter_flags = {
+        "-m",
+        "--module",
+        "-c",
+        "--command",
+        "-e",
+        "--eval",
+        "-p",
+        "--print",
+        "-command",
+        "-enc",
+        "-encodedcommand",
+        "--encoded-command",
+    }
     artifacts: dict[str, dict[str, Any]] = {executable["path"]: executable}
+    command_artifact_paths = {executable["path"]}
+    resolved_argv = [executable["path"]]
+    seen_placeholders: list[str] = []
     for index, value in enumerate(template[1:], 1):
-        if "{" in value or value.startswith("-"):
+        folded = value.casefold()
+        if folded in forbidden_interpreter_flags or any(
+            folded.startswith(f"{flag}=") or folded.startswith(f"{flag}:")
+            for flag in forbidden_interpreter_flags
+        ):
+            raise PipelineError(
+                f"{label} module, inline, eval, or encoded interpreter execution is forbidden"
+            )
+        if "{" in value or "}" in value:
+            if value not in placeholders:
+                raise PipelineError(f"{label} argv[{index}] contains an unsupported placeholder")
+            seen_placeholders.append(value)
+            resolved_argv.append(value)
+            continue
+        if value.startswith("-"):
+            resolved_argv.append(value)
             continue
         candidate = Path(value).expanduser()
-        if candidate.is_absolute() or value.startswith(("./", "../")):
-            if not candidate.is_absolute():
-                raise PipelineError(f"{label} argv artifact must be absolute: {value}")
-            descriptor = _safe_command_file(value, f"{label} argv[{index}]")
-            artifacts[descriptor["path"]] = descriptor
-    for value in required_artifacts:
-        descriptor = _safe_command_file(value, f"{label} required artifact")
+        if not candidate.is_absolute():
+            raise PipelineError(
+                f"{label} argv[{index}] is a bare relative or unresolved token: {value}"
+            )
+        descriptor = _safe_command_file(value, f"{label} argv[{index}]")
         artifacts[descriptor["path"]] = descriptor
-    resolved_argv = [executable["path"], *template[1:]]
+        command_artifact_paths.add(descriptor["path"])
+        resolved_argv.append(descriptor["path"])
+    if set(seen_placeholders) != placeholders or len(seen_placeholders) != len(placeholders):
+        raise PipelineError(f"{label} argv does not contain the exact required placeholders")
+    if entrypoint["path"] not in command_artifact_paths:
+        raise PipelineError(
+            f"{label} entrypoint must be the resolved executable or a concrete absolute argv file"
+        )
+    artifacts[entrypoint["path"]] = entrypoint
+    dependencies: list[dict[str, Any]] = []
+    dependency_seen: set[str] = set()
+    for value in dependency_paths:
+        descriptor = _runtime_artifact_descriptor(value)
+        if descriptor["path"] in dependency_seen or descriptor["path"] == entrypoint["path"]:
+            raise PipelineError(f"{label} dependency paths must resolve uniquely")
+        dependency_seen.add(descriptor["path"])
+        dependencies.append(descriptor)
     body = {
         "label": label,
         "argv": resolved_argv,
         "argv_sha256": sha256_json(resolved_argv),
         "executable": executable,
+        "entrypoint": entrypoint,
         "artifacts": [artifacts[path] for path in sorted(artifacts)],
+        "dependencies": sorted(dependencies, key=lambda value: value["path"]),
     }
     return {**body, "sha256": sha256_json(body)}
 
@@ -297,10 +359,18 @@ def lifecycle_executable_bindings(config: dict[str, Any]) -> dict[str, Any]:
         raise PipelineError("Installation source_mode must be installer or explicit local-test")
     commands: dict[str, dict[str, Any]] = {
         "validator": _command_binding(
-            "validator", installation.get("validator_argv")
+            "validator",
+            installation.get("validator_argv"),
+            entrypoint_path=installation.get("validator_entrypoint_path"),
+            dependency_paths=installation.get("validator_dependency_paths"),
+            allowed_placeholders=("{skill}",),
         ),
         "canary": _command_binding(
-            "canary", evaluation.get("canary_adapter_argv")
+            "canary",
+            evaluation.get("canary_adapter_argv"),
+            entrypoint_path=evaluation.get("canary_entrypoint_path"),
+            dependency_paths=evaluation.get("canary_dependency_paths"),
+            allowed_placeholders=("{input}", "{output}"),
         ),
     }
     if source_mode == "installer":
@@ -308,10 +378,11 @@ def lifecycle_executable_bindings(config: dict[str, Any]) -> dict[str, Any]:
         commands["installer"] = _command_binding(
             "installer",
             [str(Path(sys.executable).resolve()), str(Path(helper).expanduser())],
-            required_artifacts=(helper,),
+            entrypoint_path=helper,
+            dependency_paths=installation.get("installer_dependency_paths"),
         )
     body = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "source_mode": source_mode,
         "commands": {name: commands[name] for name in sorted(commands)},
     }
