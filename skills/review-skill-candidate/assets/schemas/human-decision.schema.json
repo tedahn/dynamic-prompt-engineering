@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "human-decision.schema.json",
+  "title": "Human merge decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "review_id", "target", "decision_owner", "actor_type", "decision", "decided_at", "rationale", "conditions", "dissent", "reversal_evidence", "authorized_actions", "forbidden_actions"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "review_id": {"type": "string", "minLength": 1},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_sha", "head_sha", "diff_sha256"],
+      "properties": {
+        "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "diff_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "decision_owner": {"type": "string", "minLength": 1},
+    "actor_type": {"const": "human"},
+    "decision": {"enum": ["approved", "approved_with_conditions", "rejected", "deferred"]},
+    "decided_at": {"type": "string", "minLength": 1},
+    "rationale": {"type": "string", "minLength": 1},
+    "conditions": {"type": "array", "items": {"type": "string"}},
+    "dissent": {"type": "array", "items": {"type": "string"}},
+    "reversal_evidence": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "authorized_actions": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "forbidden_actions": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+  }
+}

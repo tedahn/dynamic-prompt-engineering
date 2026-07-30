@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-evaluation-summary.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "completed_at", "plan_sha256", "integrity", "coverage", "quality", "resources", "analysis_coverage", "evidence"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "run_id": {"type": "string", "minLength": 1},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "integrity": {"type": "object"},
+    "coverage": {"type": "object"},
+    "quality": {"type": "object"},
+    "resources": {"type": "object"},
+    "analysis_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_task_clusters",
+        "c01_minus_b01_task_clusters",
+        "c01_minus_b02_task_clusters",
+        "preference_task_clusters",
+        "latency_ratio_task_clusters",
+        "token_ratio_task_clusters"
+      ],
+      "properties": {
+        "expected_task_clusters": {"type": "integer", "minimum": 1},
+        "c01_minus_b01_task_clusters": {"type": "integer", "minimum": 0},
+        "c01_minus_b02_task_clusters": {"type": "integer", "minimum": 0},
+        "preference_task_clusters": {"type": "integer", "minimum": 0},
+        "latency_ratio_task_clusters": {"type": "integer", "minimum": 0},
+        "token_ratio_task_clusters": {"type": "integer", "minimum": 0}
+      }
+    },
+    "evidence": {"type": "object"}
+  }
+}

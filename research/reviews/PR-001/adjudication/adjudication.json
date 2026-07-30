@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "review_id": "PR-001-8371f0f9634b",
+  "target": {
+    "base_sha": "506850f0d4cf7b21990231b40c560864fd82e9e2",
+    "head_sha": "8371f0f9634bf86e3417bae09772418034239969",
+    "diff_sha256": "24048aec899e9298b8fa5b08893e428e9de03aba518f9a99431f565c9a7943ca"
+  },
+  "adjudicator": {
+    "adjudicator_id": "codex-adjudicator-replacement-20260730",
+    "surface": "Codex desktop subagent",
+    "model": null,
+    "adjudicated_at": "2026-07-30T06:04:09.428Z",
+    "independent_from_authors": true
+  },
+  "submission_hashes": {
+    "evidence-methodology": "bb7b9909e47bde2ba2507c9c04fbfe59fdf630a8ab25f9ab558253966bad6ee5",
+    "engineering-reproducibility": "e5d4864a551cbd16389c4fe61d4863cb7d22e93507c8b0983021b48a46f41dc8",
+    "skill-safety-operations": "f410fc5a8ef6d6376f72e59df21b0ab24dd9eeef23f47c7be9fb8c2d5acf00b9"
+  },
+  "finding_dispositions": [
+    {
+      "finding_ids": ["EM-001"],
+      "disposition": "upheld",
+      "final_severity": "P2",
+      "final_status": "open",
+      "rationale": "C1 tied B0 on recall while the gate compares C1 only with B2. Disclosed metrics and efficacy caveats do not supply the missing claim-level null-result disposition.",
+      "evidence_basis": ["EM-001 accepted anchors: T-005 protocol and mechanical summary"]
+    },
+    {
+      "finding_ids": ["EM-002"],
+      "disposition": "upheld",
+      "final_severity": "P2",
+      "final_status": "open",
+      "rationale": "Aggregation, adjudication, tie, missing-data, uncertainty, and intermediate-score rules remain underspecified. Existing randomization and blinding controls do not resolve these analysis choices.",
+      "evidence_basis": ["EM-002 accepted anchors: T-019 protocol and rubric"]
+    },
+    {
+      "finding_ids": ["ER-001"],
+      "disposition": "upheld",
+      "final_severity": "P1",
+      "final_status": "open",
+      "rationale": "An auth symlink resides under the workspace used by workspace-write cells, without a test proving it unreadable. Cleanup and possible OS restrictions do not establish credential isolation.",
+      "evidence_basis": ["ER-001 accepted anchors: run_pilot.py and test_run_pilot.py"]
+    },
+    {
+      "finding_ids": ["ER-002"],
+      "disposition": "upheld",
+      "final_severity": "P2",
+      "final_status": "open",
+      "rationale": "The published fixture schema is not applied; partial manual checks and valid-fixture tests do not protect reproducibility against malformed nested data.",
+      "evidence_basis": ["ER-002 accepted anchors: build spec, fixture schema, evaluator, and tests"]
+    },
+    {
+      "finding_ids": ["SSO-001"],
+      "disposition": "upheld",
+      "final_severity": "P1",
+      "final_status": "open",
+      "rationale": "Allowed-scope raw text remains eligible when trust, injection, or sensitivity metadata is absent. Optional caller annotations do not enforce fail-closed secret and injection exclusions.",
+      "evidence_basis": ["SSO-001 accepted anchors: context-composer skill, contract, and adapter"]
+    },
+    {
+      "finding_ids": ["SSO-002"],
+      "disposition": "upheld",
+      "final_severity": "P1",
+      "final_status": "open",
+      "rationale": "Pre-promotion approval requires PR and merged-commit evidence produced only by the later promotion gate, creating an unresolved temporal contradiction.",
+      "evidence_basis": ["SSO-002 accepted anchors: promotion runbook and approval schema"]
+    },
+    {
+      "finding_ids": ["SSO-003"],
+      "disposition": "upheld",
+      "final_severity": "P2",
+      "final_status": "open",
+      "rationale": "Required workspace inspection lacks an explicit untrusted-instruction rule and adversarial gates. Scoped, advice-only operation reduces impact but leaves conflict handling unspecified.",
+      "evidence_basis": ["SSO-003 accepted anchors: explore-approaches skill, protocol, and fixtures"]
+    }
+  ],
+  "conflicts": [],
+  "merge_gate": "changes_required",
+  "rationale": "All seven findings are supported and open. The upheld P1 findings ER-001, SSO-001, and SSO-002 force changes_required. The named human retains the merge decision.",
+  "limitations": [
+    "Review was limited to the manifest, gate, adjudication schema, and three frozen submissions; target files were not reopened.",
+    "Submission hashes and all seven anchors were previously confirmed; this pass independently sanity-checked the submissions.",
+    "Human merge decision remains pending.",
+    "Behavioral efficacy remains unknown.",
+    "promotion_approved=false; installation_approved=false."
+  ]
+}

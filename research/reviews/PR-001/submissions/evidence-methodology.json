@@ -1,0 +1,108 @@
+{
+  "schema_version": "1.0",
+  "review_id": "PR-001-8371f0f9634b",
+  "target": {
+    "base_sha": "506850f0d4cf7b21990231b40c560864fd82e9e2",
+    "head_sha": "8371f0f9634bf86e3417bae09772418034239969",
+    "diff_sha256": "24048aec899e9298b8fa5b08893e428e9de03aba518f9a99431f565c9a7943ca"
+  },
+  "reviewer": {
+    "role": "evidence-methodology",
+    "reviewer_id": "codex-evidence-20260730",
+    "surface": "Codex desktop subagent",
+    "model": null,
+    "reviewed_at": "2026-07-30T05:47:49Z",
+    "independent_context": true
+  },
+  "scope": {
+    "reviewed_files": [
+      "AGENTS.md",
+      "README.md",
+      "chatgpt-project/handbook/CONTINUOUS_IMPROVEMENT.md",
+      "chatgpt-project/handbook/EVIDENCE_GOVERNANCE.md",
+      "research/RESEARCH_BRIEF-prompt-techniques-as-skills.md",
+      "research/SURFACE_REGISTRY.md",
+      "research/TECHNIQUE_TAXONOMY.md",
+      "research/evaluations/context-composer/BUILD_SPEC.md",
+      "research/evaluations/context-composer/PROTOCOL.md",
+      "research/evaluations/context-composer/README.md",
+      "research/evaluations/context-composer/config/context-composer-v1.json",
+      "research/evaluations/context-composer/results/mechanical-summary-2026-07-29.json",
+      "research/evaluations/context-composer/scripts/context_eval.py",
+      "research/evaluations/explore-approaches/PROMOTION.md",
+      "research/evaluations/explore-approaches/PROTOCOL.md",
+      "research/evaluations/explore-approaches/results/forward-test-2026-07-29.md",
+      "research/evaluations/explore-approaches/rubrics/rubric-v1.json",
+      "research/ledgers/assumptions-forecasts.csv",
+      "research/ledgers/change-log.csv",
+      "research/ledgers/claims.csv",
+      "research/ledgers/eval-cases.csv",
+      "research/ledgers/sources.csv",
+      "research/skill-candidates/T-005-context-composer.md",
+      "research/skill-candidates/T-019-explore-approaches.md",
+      "research/technique-profiles/T-005-context-composer.md",
+      "research/technique-profiles/T-019-workspace-grounded-approach-exploration.md",
+      "skills/context-composer/SKILL.md",
+      "skills/context-composer/references/contract.md"
+    ],
+    "not_reviewed": [
+      "Raw context-composer and explore-approaches fixture payloads",
+      "Implementation and test code outside the context-composer selector and grader paths",
+      "Professionalize-prompt pilot-v2 artifacts beyond their frozen ledger records",
+      "Dashboard UI and build implementation beyond source-derived claim projections",
+      "Skill-safety and operational behavior outside evidence-state and evaluation-method implications"
+    ],
+    "concerns_checked": [
+      "Claim-to-source traceability",
+      "Evidence-state classification",
+      "Contradiction and null-result preservation",
+      "Baseline and gate alignment",
+      "Selector and holdout leakage controls",
+      "Grader specification and reproducibility",
+      "Thresholds and repeated-trial design",
+      "Behavioral and cross-surface transfer boundaries",
+      "Frozen-target and evidence-index integrity"
+    ]
+  },
+  "verdict": "pass_with_findings",
+  "findings": [
+    {
+      "finding_id": "EM-001",
+      "severity": "P2",
+      "status": "open",
+      "title": "Mechanical gate obscures a null result against the full-context baseline",
+      "claim": "The first T-005 claim requires C1 to achieve higher required-evidence recall than B0, B1, and B2, but C1 and B0 both score 1.0 recall while the recorded gate tests only non-inferiority to B2 and still reports a mechanical pilot pass.",
+      "impact": "Readers can interpret the pass label as support for the stated comparative claim even though the strongest baseline tied C1 on recall. The missing claim-level disposition weakens null-result preservation and makes the gate less informative for the behavioral-pilot decision.",
+      "evidence": [
+        {"path": "research/evaluations/context-composer/PROTOCOL.md", "line_start": 7, "line_end": 11, "note": "Defines the comparative claim as higher recall and lower unsafe inclusion than every baseline."},
+        {"path": "research/evaluations/context-composer/PROTOCOL.md", "line_start": 24, "line_end": 24, "note": "The gate requires only no critical or budget failures and no recall deficit versus B2."},
+        {"path": "research/evaluations/context-composer/results/mechanical-summary-2026-07-29.json", "line_start": 8, "line_end": 14, "note": "B0 and C1 each have 1.0 required recall, yet the snapshot records mechanical-pilot-gate-passed."}
+      ],
+      "recommendation": "Record a claim-level outcome marking the recall-superiority component unsupported on this development suite, and either align the gate with the stated claim or rewrite the claim as a safety-plus-noninferiority criterion. Preserve the B0 tie explicitly in the profile and ledger projection.",
+      "counterevidence": "The protocol says the gate authorizes only behavioral-pilot consideration, the snapshot exposes all baseline metrics, and the surrounding artifacts consistently state that behavioral efficacy remains unknown.",
+      "confidence": "high"
+    },
+    {
+      "finding_id": "EM-002",
+      "severity": "P2",
+      "status": "open",
+      "title": "Held-out grading analysis is not fully prespecified",
+      "claim": "The T-019 protocol specifies numeric promotion thresholds over repeated tasks and trials, but it does not define the unit and order of aggregation across graders, trials, tasks, and domains, treatment of missing grades and ties, or how adjudicated grades replace or coexist with raw grades; the rubric supplies anchors only for scores 0, 2, and 4.",
+      "impact": "Two reasonable evaluators could compute different pass or fail outcomes from the same preserved evidence. This creates avoidable analyst discretion at the promotion gate and makes the proposed comparison less reproducible.",
+      "evidence": [
+        {"path": "research/evaluations/explore-approaches/PROTOCOL.md", "line_start": 20, "line_end": 25, "note": "Requires repeated trials, blinded grades, disagreements, and adjudication without defining their aggregation."},
+        {"path": "research/evaluations/explore-approaches/PROTOCOL.md", "line_start": 38, "line_end": 51, "note": "Defines mean-score, pairwise-preference, resource, and domain thresholds without a complete analysis rule."},
+        {"path": "research/evaluations/explore-approaches/rubrics/rubric-v1.json", "line_start": 24, "line_end": 30, "note": "Provides anchors for 0, 2, and 4 and a pairwise recording rule, but not intermediate anchors or score aggregation."}
+      ],
+      "recommendation": "Before freezing the held-out run, specify the task-level analysis unit, dimension aggregation, grader aggregation and adjudication semantics, tie and missing-data handling, domain regression test, uncertainty reporting, and anchors for scores 1 and 3. Hash that analysis plan with the frozen rubric and protocol.",
+      "counterevidence": "The protocol already requires matched arms, independent randomization, preserved raw evidence, blinded grading, disagreement adjudication, and owner acceptance of thresholds before execution.",
+      "confidence": "high"
+    }
+  ],
+  "limitations": [
+    "This was a bounded evidence-methodology review, not exhaustive coverage of all 50 changed files.",
+    "Reported test counts were treated as packet evidence; test suites were not rerun because the assignment required read-only work.",
+    "No external sources were refreshed, so source-content accuracy beyond frozen traceability and scope wording was not independently reverified.",
+    "The full-index binary diff hash, changed-file list, and manifest artifact hashes were mechanically matched to the named commits."
+  ]
+}

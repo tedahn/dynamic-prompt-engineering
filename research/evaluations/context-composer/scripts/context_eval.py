@@ -10,8 +10,26 @@ from copy import deepcopy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = ROOT / "config" / "context-composer-v1.json"
+CONFIG_PATH = ROOT / "config" / "context-composer-v2.json"
 FIXTURES_PATH = ROOT / "fixtures" / "fixtures-v1.jsonl"
+SCHEMA_PATH = ROOT / "schemas" / "fixture.schema.json"
+FIXTURE_PRODUCER = "context-fixture-author-v1"
+SUPPORTED_SCHEMA_KEYWORDS = {
+    "$schema",
+    "title",
+    "type",
+    "required",
+    "properties",
+    "additionalProperties",
+    "pattern",
+    "minLength",
+    "minimum",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "enum",
+    "items",
+}
 
 
 def load_json(path: Path):
@@ -20,6 +38,101 @@ def load_json(path: Path):
 
 def load_fixtures(path: Path = FIXTURES_PATH):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def schema_vocabulary_errors(schema, path: str = "$schema") -> list[str]:
+    """Reject schema keywords or shapes this standard-library validator cannot enforce."""
+    if not isinstance(schema, dict):
+        return [f"{path}: schema must be an object"]
+    errors = [
+        f"{path}: unsupported schema keyword {keyword}"
+        for keyword in sorted(set(schema) - SUPPORTED_SCHEMA_KEYWORDS)
+    ]
+    schema_type = schema.get("type")
+    if schema_type not in {"object", "array", "string", "integer", "boolean"}:
+        errors.append(f"{path}.type: unsupported or missing schema type")
+    if "$schema" in schema and not isinstance(schema["$schema"], str):
+        errors.append(f"{path}.$schema: must be a string")
+    if "title" in schema and not isinstance(schema["title"], str):
+        errors.append(f"{path}.title: must be a string")
+    if "required" in schema and (
+        not isinstance(schema["required"], list)
+        or any(not isinstance(field, str) for field in schema["required"])
+    ):
+        errors.append(f"{path}.required: must be an array of strings")
+    if "enum" in schema and not isinstance(schema["enum"], list):
+        errors.append(f"{path}.enum: must be an array")
+    if "pattern" in schema and not isinstance(schema["pattern"], str):
+        errors.append(f"{path}.pattern: must be a string")
+    for keyword in ("minLength", "minimum", "minItems", "maxItems"):
+        if keyword in schema and (
+            not isinstance(schema[keyword], int)
+            or isinstance(schema[keyword], bool)
+            or schema[keyword] < 0
+        ):
+            errors.append(f"{path}.{keyword}: must be a nonnegative integer")
+    if "uniqueItems" in schema and not isinstance(schema["uniqueItems"], bool):
+        errors.append(f"{path}.uniqueItems: must be boolean")
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        errors.append(f"{path}.properties: must be an object")
+    else:
+        for field, child_schema in properties.items():
+            errors.extend(schema_vocabulary_errors(child_schema, f"{path}.properties.{field}"))
+    if "items" in schema:
+        errors.extend(schema_vocabulary_errors(schema["items"], f"{path}.items"))
+    if "additionalProperties" in schema and not isinstance(schema["additionalProperties"], bool):
+        errors.append(f"{path}.additionalProperties: only boolean values are supported")
+    return errors
+
+
+def schema_errors(value, schema: dict, path: str = "$") -> list[str]:
+    """Validate the JSON Schema subset used by the committed fixture schema."""
+    errors: list[str] = []
+    expected_type = schema.get("type")
+    type_checks = {
+        "object": lambda candidate: isinstance(candidate, dict),
+        "array": lambda candidate: isinstance(candidate, list),
+        "string": lambda candidate: isinstance(candidate, str),
+        "integer": lambda candidate: isinstance(candidate, int) and not isinstance(candidate, bool),
+        "boolean": lambda candidate: isinstance(candidate, bool),
+    }
+    if expected_type in type_checks and not type_checks[expected_type](value):
+        return [f"{path}: expected {expected_type}"]
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append(f"{path}: value is not in the allowed enum")
+    if isinstance(value, str):
+        if len(value) < schema.get("minLength", 0):
+            errors.append(f"{path}: string is shorter than minLength")
+        if "pattern" in schema and re.search(schema["pattern"], value) is None:
+            errors.append(f"{path}: string does not match pattern")
+    if isinstance(value, int) and not isinstance(value, bool) and value < schema.get("minimum", value):
+        errors.append(f"{path}: integer is below minimum")
+    if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0):
+            errors.append(f"{path}: array is shorter than minItems")
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            errors.append(f"{path}: array is longer than maxItems")
+        if schema.get("uniqueItems"):
+            normalized = [json.dumps(item, sort_keys=True, separators=(",", ":")) for item in value]
+            if len(normalized) != len(set(normalized)):
+                errors.append(f"{path}: array items must be unique")
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                errors.extend(schema_errors(item, item_schema, f"{path}[{index}]"))
+    if isinstance(value, dict):
+        properties = schema.get("properties", {})
+        for field in schema.get("required", []):
+            if field not in value:
+                errors.append(f"{path}: missing required field {field}")
+        if schema.get("additionalProperties") is False:
+            for field in sorted(set(value) - set(properties)):
+                errors.append(f"{path}: unsupported field {field}")
+        for field, child_schema in properties.items():
+            if field in value:
+                errors.extend(schema_errors(value[field], child_schema, f"{path}.{field}"))
+    return errors
 
 
 def tokens(value: str) -> list[str]:
@@ -31,8 +144,17 @@ def item_tokens(item: dict) -> int:
 
 
 def safe_input(fixture: dict) -> dict:
-    """Remove every grader-only field before a condition sees a fixture."""
-    return {key: deepcopy(fixture[key]) for key in ("fixture_id", "query", "max_tokens", "allowed_scopes", "signals", "items")}
+    """Remove grader fields and classify items through the trusted fixture producer."""
+    case = {key: deepcopy(fixture[key]) for key in ("fixture_id", "query", "max_tokens", "allowed_scopes", "signals", "items")}
+    for item in case["items"]:
+        item["source"] = f"fixture://{case['fixture_id']}/{item['id']}"
+        item["security"] = {
+            "producer": FIXTURE_PRODUCER,
+            "trust": "untrusted" if item["authority"] == "untrusted" else "trusted",
+            "sensitivity": "secret" if item["scope"] == "restricted" else "public",
+            "content_type": "instruction" if item.get("injection", False) else "evidence",
+        }
+    return case
 
 
 def pack(items: list[dict], max_tokens: int, enforce_dependencies: bool = False) -> list[dict]:
@@ -66,6 +188,13 @@ def eligible_items(case: dict, config: dict) -> list[dict]:
     result = []
     for item in case["items"]:
         if config["safety"]["exclude_disallowed_scope"] and item.get("scope") not in case["allowed_scopes"]:
+            continue
+        security = item["security"]
+        if config["safety"]["exclude_untrusted"] and security["trust"] != "trusted":
+            continue
+        if config["safety"]["exclude_secret"] and security["sensitivity"] == "secret":
+            continue
+        if config["safety"]["exclude_instruction"] and security["content_type"] == "instruction":
             continue
         if config["safety"]["exclude_injection"] and item.get("injection", False):
             continue
@@ -161,15 +290,26 @@ def grade(fixture: dict, result: dict) -> dict:
     }
 
 
-def validate(config: dict, fixtures: list[dict]) -> list[str]:
+def validate(config: dict, fixtures: list[dict], schema: dict | None = None) -> list[str]:
     errors = []
-    required = {"fixture_id", "family", "query", "max_tokens", "allowed_scopes", "signals", "items", "expected"}
+    if config.get("trusted_fixture_producer") != FIXTURE_PRODUCER:
+        errors.append("configured trusted fixture producer does not match the evaluator producer")
+    required_safety = {"exclude_injection", "exclude_disallowed_scope", "exclude_stale", "exclude_untrusted", "exclude_secret", "exclude_instruction"}
+    if set(config.get("safety", {})) != required_safety or any(
+        not isinstance(value, bool) for value in config.get("safety", {}).values()
+    ):
+        errors.append("invalid safety configuration")
+    schema = load_json(SCHEMA_PATH) if schema is None else schema
+    vocabulary_errors = schema_vocabulary_errors(schema)
+    if vocabulary_errors:
+        return errors + vocabulary_errors
     ids = []
-    for fixture in fixtures:
+    for index, fixture in enumerate(fixtures):
+        structural_errors = schema_errors(fixture, schema)
+        errors.extend(f"fixture[{index}]: {error}" for error in structural_errors)
+        if structural_errors:
+            continue
         ids.append(fixture.get("fixture_id"))
-        missing = sorted(required - fixture.keys())
-        if missing:
-            errors.append(f"{fixture.get('fixture_id', '?')}: missing {missing}")
         item_ids = [item.get("id") for item in fixture.get("items", [])]
         if len(item_ids) != len(set(item_ids)):
             errors.append(f"{fixture.get('fixture_id', '?')}: duplicate item IDs")

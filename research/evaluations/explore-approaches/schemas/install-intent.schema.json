@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Crash-recoverable root skill installation intent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "transaction_id", "created_at", "updated_at", "merge_commit", "destination",
+    "staging", "backup", "quarantine", "previous_existed", "previous_file_hashes",
+    "candidate_file_hashes", "phase", "record_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "transaction_id": {"pattern": "^[0-9a-f]{32}$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "merge_commit": {"pattern": "^[0-9a-f]{40,64}$"},
+    "destination": {"type": "string", "minLength": 1},
+    "staging": {"type": "string", "minLength": 1},
+    "backup": {"type": "string", "minLength": 1},
+    "quarantine": {"type": "string", "minLength": 1},
+    "previous_existed": {"type": "boolean"},
+    "previous_file_hashes": {"$ref": "#/$defs/hashes"},
+    "candidate_file_hashes": {"$ref": "#/$defs/hashes"},
+    "phase": {"enum": ["preparing", "staged", "backup-pending", "activation-pending", "canary-pending", "completed", "rolled-back"]},
+    "record_sha256": {"pattern": "^[0-9a-f]{64}$"}
+  },
+  "$defs": {
+    "hashes": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+  }
+}

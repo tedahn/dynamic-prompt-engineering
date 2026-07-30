@@ -14,6 +14,7 @@ Use the workspace research brief, evidence-governance rules, current T-005 profi
 
 - Refresh primary evidence for context selection, retrieval, ordering, long-context degradation, temporal updates, and abstention.
 - Create a deterministic, reproducible fixture suite and evaluator covering retrieval, contradiction, authority, safety, ordering, and budget pressure.
+- Enforce the committed nested fixture schema and exercise fail-closed trust, sensitivity, content-type, and provenance controls with deterministic negative cases.
 - Separate mechanical validation from behavioral evidence and keep the latter `Unknown` until an authorized matched run.
 - Update the technique profile, ledgers, taxonomy, and dashboard source data in the same change.
 
@@ -21,7 +22,7 @@ Use the workspace research brief, evidence-governance rules, current T-005 profi
 
 - No paid model calls, external publication, skill installation, or production promotion.
 - Do not encode expected answers into the candidate selector.
-- Preserve negative and null results, source scope, transfer limits, and named-human gates.
+- Preserve negative and null results—including the B0/C1 required-recall tie—source scope, transfer limits, and named-human gates.
 - Use standard-library-only local tooling and deterministic outputs.
 
 # Output

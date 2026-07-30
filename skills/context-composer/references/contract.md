@@ -23,19 +23,29 @@
       "timestamp": "2026-07-29",
       "retrieval_terms": ["release", "approval"],
       "depends_on": [],
+      "security": {
+        "producer": "workspace-evidence-indexer-v1",
+        "trust": "trusted",
+        "sensitivity": "internal",
+        "content_type": "evidence"
+      },
       "injection": false
     }
   ]
 }
 ```
 
-Required top-level fields are `query`, `max_tokens`, `allowed_scopes`, and `items`. Item fields required by the script are `id`, `text`, `scope`, `status`, and `authority`.
+Required top-level fields are `query`, `max_tokens`, `allowed_scopes`, and `items`. Every item requires nonempty `id`, `text`, `source`, and `scope` fields plus `status`, `authority`, and a `security` object containing exactly `producer`, `trust`, `sensitivity`, and `content_type`.
 
 Supported authority values are `canonical`, `primary`, `secondary`, and `untrusted`. Supported status values are `current`, `undated`, `stale`, and `superseded`.
 
+Supported trusted producer IDs are `workspace-evidence-indexer-v1` and `context-fixture-author-v1`. This allowlist identifies approved producer paths; it is not a cryptographic signature. The caller must establish producer authenticity outside the JSON document and must not let retrieved content self-assert a producer ID.
+
+Supported trust values are `trusted` and `untrusted`; sensitivity values are `public`, `internal`, `confidential`, and `secret`; content types are `evidence` and `instruction`. Missing, extra, malformed, or unknown security metadata rejects the entire payload before selection. Valid items marked `untrusted`, `secret`, or `instruction` are excluded with an explicit reason. `injection: true` remains a defense-in-depth exclusion; omitting `injection` does not bypass the required security classification.
+
 ## Output
 
-The script emits `context-pack-v1` JSON containing the selected route, token use, ordered selected items, excluded items with reasons, material omissions, and warnings. `clarify` produces no selected context.
+The script emits `context-pack-v1` JSON containing the selected route, token use, ordered selected items, excluded items with reasons, material omissions, and warnings. Every selected item retains its source and security metadata so downstream users can audit provenance. `clarify` produces no selected context.
 
 The token count is a deterministic lexical approximation for comparison and budgeting; it is not a provider tokenizer measurement.
 

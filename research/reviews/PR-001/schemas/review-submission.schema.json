@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "review-submission.schema.json",
+  "title": "Independent review submission",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "review_id", "target", "reviewer", "scope", "verdict", "findings", "limitations"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "review_id": {"type": "string", "minLength": 1},
+    "target": {"$ref": "#/$defs/target"},
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "reviewer_id", "surface", "model", "reviewed_at", "independent_context"],
+      "properties": {
+        "role": {"enum": ["evidence-methodology", "engineering-reproducibility", "skill-safety-operations"]},
+        "reviewer_id": {"type": "string", "minLength": 1},
+        "surface": {"type": "string", "minLength": 1},
+        "model": {"type": ["string", "null"]},
+        "reviewed_at": {"type": "string", "minLength": 1},
+        "independent_context": {"const": true}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewed_files", "not_reviewed", "concerns_checked"],
+      "properties": {
+        "reviewed_files": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
+        "not_reviewed": {"type": "array", "items": {"type": "string"}},
+        "concerns_checked": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true}
+      }
+    },
+    "verdict": {"enum": ["pass", "pass_with_findings", "changes_required", "blocked"]},
+    "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_sha", "head_sha", "diff_sha256"],
+      "properties": {
+        "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "diff_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "line_start", "line_end"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "line_start": {"type": "integer", "minimum": 1},
+        "line_end": {"type": "integer", "minimum": 1},
+        "note": {"type": "string"}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finding_id", "severity", "status", "title", "claim", "impact", "evidence", "recommendation", "counterevidence", "confidence"],
+      "properties": {
+        "finding_id": {"type": "string", "pattern": "^[A-Z]{2,4}-[0-9]{3}$"},
+        "severity": {"enum": ["P0", "P1", "P2", "P3"]},
+        "status": {"enum": ["open", "resolved", "accepted_risk", "rejected", "unresolved"]},
+        "title": {"type": "string", "minLength": 1},
+        "claim": {"type": "string", "minLength": 1},
+        "impact": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}, "minItems": 1},
+        "recommendation": {"type": "string", "minLength": 1},
+        "counterevidence": {"type": "string"},
+        "confidence": {"enum": ["high", "medium", "low"]}
+      }
+    }
+  }
+}

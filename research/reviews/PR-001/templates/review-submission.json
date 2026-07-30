@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "review_id": "REPLACE",
+  "target": {"base_sha": "REPLACE", "head_sha": "REPLACE", "diff_sha256": "REPLACE"},
+  "reviewer": {"role": "evidence-methodology", "reviewer_id": "REPLACE", "surface": "REPLACE", "model": null, "reviewed_at": "REPLACE", "independent_context": true},
+  "scope": {"reviewed_files": ["REPLACE"], "not_reviewed": [], "concerns_checked": ["REPLACE"]},
+  "verdict": "pass",
+  "findings": [],
+  "limitations": []
+}

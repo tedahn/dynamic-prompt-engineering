@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-holdout-manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest_id",
+    "created_at",
+    "created_by",
+    "private",
+    "sealed",
+    "task_count",
+    "domains",
+    "holdout_sha256",
+    "candidate_manifest_sha256",
+    "config_sha256",
+    "protocol_sha256",
+    "rubric_sha256",
+    "rubric_content_sha256",
+    "arm_materials_sha256",
+    "subject_runtime_sha256",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2.0"
+    },
+    "manifest_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "created_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "private": {
+      "const": true
+    },
+    "sealed": {
+      "const": true
+    },
+    "task_count": {
+      "type": "integer",
+      "minimum": 12
+    },
+    "domains": {
+      "type": "array",
+      "minItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "holdout_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "candidate_manifest_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "config_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "protocol_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "rubric_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "rubric_content_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "arm_materials_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "subject_runtime_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "identity", "namespace", "value"],
+      "properties": {
+        "algorithm": {
+          "const": "ssh-keygen-y"
+        },
+        "identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

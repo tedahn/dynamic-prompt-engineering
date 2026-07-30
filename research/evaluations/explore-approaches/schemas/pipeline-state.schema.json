@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-pipeline-state.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["stream", "version", "last_hash", "state"],
+  "properties": {
+    "stream": {"type": "string", "minLength": 1},
+    "version": {"type": "integer", "minimum": 0},
+    "last_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "state": {
+      "enum": ["draft", "frozen", "holdout-ready", "running", "grading", "promotable", "rejected", "inconclusive", "invalid", "awaiting-human-approval", "approved", "promoting", "pr-open", "merged", "installing", "canary", "active", "quarantined", "rolled-back"]
+    }
+  }
+}

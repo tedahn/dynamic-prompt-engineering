@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+
+SCRIPT = Path(__file__).resolve().parents[4] / "skills" / "review-skill-candidate" / "scripts" / "review_bundle.py"
+SPEC = importlib.util.spec_from_file_location("review_bundle", SCRIPT)
+assert SPEC and SPEC.loader
+REVIEW = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(REVIEW)
+
+
+class ReviewBundleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self._git("init", "-b", "main")
+        self._git("config", "user.email", "test@example.invalid")
+        self._git("config", "user.name", "Test Reviewer")
+        self._write("policy.md", "# Policy\n\nHuman decides merge.\n")
+        self._write("app.py", "VALUE = 1\n")
+        self._git("add", ".")
+        self._git("commit", "-m", "base")
+        self.base = self._git("rev-parse", "HEAD").strip()
+        self._write("app.py", "VALUE = 2\nSAFE = True\n")
+        self._write("skill.md", "# Candidate\n\nBehavioral efficacy is unknown.\n")
+        self._git("add", ".")
+        self._git("commit", "-m", "candidate")
+        self.head = self._git("rev-parse", "HEAD").strip()
+        self.bundle = self.root / "bundle"
+        self._init_bundle()
+
+    def _git(self, *args: str) -> str:
+        return subprocess.check_output(["git", *args], cwd=self.repo, text=True)
+
+    def _write(self, relative: str, text: str) -> None:
+        path = self.repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def _init_bundle(self) -> None:
+        result = REVIEW.main([
+            "init", "--repo-root", str(self.repo), "--repository", "example/repo",
+            "--base", self.base, "--head", self.head, "--pr-number", "1",
+            "--decision-owner", "Example Human", "--requested-by", "test",
+            "--output", str(self.bundle), "--review-id", "TEST-001",
+            "--built-at", "2026-07-30T00:00:00Z", "--policy", "policy.md",
+            "--validation", "unit test baseline passed",
+        ])
+        self.assertEqual(result, 0)
+
+    def _manifest(self) -> dict:
+        return json.loads((self.bundle / "manifest.json").read_text())
+
+    def _submission(self, role: str, reviewer_id: str, findings: list[dict] | None = None) -> dict:
+        manifest = self._manifest()
+        return {
+            "schema_version": "1.0",
+            "review_id": manifest["review_id"],
+            "target": manifest["target"],
+            "reviewer": {
+                "role": role, "reviewer_id": reviewer_id, "surface": "test",
+                "model": None, "reviewed_at": "2026-07-30T00:01:00Z",
+                "independent_context": True,
+            },
+            "scope": {
+                "reviewed_files": ["app.py", "skill.md"], "not_reviewed": [],
+                "concerns_checked": ["correctness", "authority"],
+            },
+            "verdict": "pass" if not findings else "changes_required",
+            "findings": findings or [],
+            "limitations": [],
+        }
+
+    def _write_reviews(self, shared_id: bool = False, finding: dict | None = None) -> None:
+        for index, role in enumerate(REVIEW.REQUIRED_ROLES, 1):
+            findings = [finding] if finding and role == "evidence-methodology" else []
+            reviewer = "same" if shared_id else f"reviewer-{index}"
+            REVIEW.write_json(self.bundle / "submissions" / f"{role}.json", self._submission(role, reviewer, findings))
+
+    def _write_adjudication(self, dispositions: list[dict] | None = None, gate: str = "eligible_for_human_decision") -> None:
+        manifest = self._manifest()
+        hashes = {
+            role: REVIEW.sha256_file(self.bundle / "submissions" / f"{role}.json")
+            for role in REVIEW.REQUIRED_ROLES
+        }
+        REVIEW.write_json(self.bundle / "adjudication" / "adjudication.json", {
+            "schema_version": "1.0", "review_id": manifest["review_id"],
+            "target": manifest["target"],
+            "adjudicator": {
+                "adjudicator_id": "adjudicator-1", "surface": "test", "model": None,
+                "adjudicated_at": "2026-07-30T00:02:00Z", "independent_from_authors": True,
+            },
+            "submission_hashes": hashes, "finding_dispositions": dispositions or [],
+            "conflicts": [], "merge_gate": gate, "rationale": "Evidence checked.",
+            "limitations": [],
+        })
+
+    def _validate(self, write: bool = False) -> dict:
+        return REVIEW.validate_bundle(argparse.Namespace(
+            repo_root=str(self.repo), bundle=str(self.bundle), write_summary=write
+        ))
+
+    def test_init_freezes_target_and_creates_role_packets(self) -> None:
+        manifest = self._manifest()
+        self.assertEqual(manifest["target"]["base_sha"], self.base)
+        self.assertEqual(manifest["target"]["head_sha"], self.head)
+        self.assertEqual(manifest["required_roles"], list(REVIEW.REQUIRED_ROLES))
+        for role in REVIEW.REQUIRED_ROLES:
+            self.assertTrue((self.bundle / "assignments" / f"{role}.md").is_file())
+        self.assertTrue((self.bundle / "packet-index.json").is_file())
+
+    def test_init_refuses_to_overwrite_preserved_bundle(self) -> None:
+        with self.assertRaises(REVIEW.ReviewError):
+            REVIEW.init_bundle(argparse.Namespace(
+                repo_root=str(self.repo), repository="example/repo", base=self.base,
+                head=self.head, pr_number=1, decision_owner="Example Human",
+                requested_by="test", output=str(self.bundle), review_id="TEST-002",
+                built_at="2026-07-30T00:00:00Z", policy=[], artifact=[], validation=[],
+            ))
+
+    def test_missing_reviews_fail_closed(self) -> None:
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["computed_merge_gate"], "blocked")
+        self.assertEqual(len(result["completed_roles"]), 0)
+
+    def test_clean_reviews_are_provisional_for_human(self) -> None:
+        self._write_reviews()
+        self._write_adjudication()
+        result = self._validate(write=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["computed_merge_gate"], "eligible_for_human_decision")
+        self.assertEqual(result["decision_status"], "provisional")
+        self.assertEqual(result["behavioral_efficacy"], "unknown")
+        self.assertFalse(result["installation_ready"])
+        self.assertTrue((self.bundle / "validation-summary.json").is_file())
+
+    def test_open_p1_requires_changes_without_invalidating_bundle(self) -> None:
+        finding = {
+            "finding_id": "EM-001", "severity": "P1", "status": "open",
+            "title": "Claim exceeds evidence", "claim": "The candidate claims an unmeasured result.",
+            "impact": "The merge record would be misleading.",
+            "evidence": [{"path": "skill.md", "line_start": 3, "line_end": 3}],
+            "recommendation": "Narrow the claim.", "counterevidence": "No held-out result exists.",
+            "confidence": "high",
+        }
+        self._write_reviews(finding=finding)
+        disposition = {
+            "finding_ids": ["EM-001"], "disposition": "upheld", "final_severity": "P1",
+            "final_status": "open", "rationale": "Direct text exceeds evidence.",
+            "evidence_basis": ["skill.md:3"],
+        }
+        self._write_adjudication([disposition], "changes_required")
+        result = self._validate()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["computed_merge_gate"], "changes_required")
+        self.assertEqual(result["unresolved_blocking_findings"], 1)
+
+    def test_duplicate_reviewer_identity_blocks_independence(self) -> None:
+        self._write_reviews(shared_id=True)
+        self._write_adjudication()
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertIn("reviewer identities are not unique", result["errors"])
+
+    def test_stale_submission_hash_blocks_adjudication(self) -> None:
+        self._write_reviews()
+        self._write_adjudication()
+        path = self.bundle / "submissions" / "evidence-methodology.json"
+        value = json.loads(path.read_text())
+        value["limitations"].append("changed after adjudication")
+        REVIEW.write_json(path, value)
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("hash mismatch" in item for item in result["errors"]))
+
+    def test_packet_drift_is_detected(self) -> None:
+        self._write_reviews()
+        self._write_adjudication()
+        (self.bundle / "context-pack.md").write_text("changed\n", encoding="utf-8")
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("packet file hash mismatch" in item for item in result["errors"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

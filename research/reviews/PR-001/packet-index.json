@@ -1,0 +1,17 @@
+{
+  "files": {
+    "assignments/engineering-reproducibility.md": "6e68d7fbf3c22e0514ee574c8ed3d9da471ae4ef6b33b9dfeaf4e21004b8f9b3",
+    "assignments/evidence-methodology.md": "5a4aab0e51d6cf9af43fdf8053d74bb4a4b979157dacafacc3ccdc8f19eacddd",
+    "assignments/skill-safety-operations.md": "a83ad61f349f3099b963c4a69ff602e6534e4d99592f85dcc3cb49f68be2faac",
+    "context-pack.md": "7bc3b822f1d0cd6ea481fbc08b88165fa65d02a888d6e37612557700ddeddbb2",
+    "gate.md": "ce227526747f23c65e92e8c13dd4ff5d86ad71d816bb826cef2990098518df27",
+    "manifest.json": "508ec44f9e2aef9fb95bc83f3e79b447fbcc6c6297a53756da02d110bff6c239",
+    "schemas/adjudication.schema.json": "878352254d20572bdd69a915ea3257da149691a6eb1bbdd5b6c364c2a3812af4",
+    "schemas/human-decision.schema.json": "2c272e68ae3bb542531bb521ac597863aa5e54a34fb90276aa932881e69b5e00",
+    "schemas/review-submission.schema.json": "5ea100313cf492d58952d67ad452813147d7151b9ec4caeb9e298c5b619ac605",
+    "templates/adjudication.json": "f7ba6ab31906a72ace8d7a8bbbf0eebaa18872dece5d702029e7f3135b8d3820",
+    "templates/human-decision.json": "b81812f9e59a48d7561eaa42fbaf50bffef5fbd681debd0c8ade6a565fe75a2b",
+    "templates/review-submission.json": "464c3471ed1fd63345872591d6ea08cd94b99436208b86714ed9a8ad61b62cf4"
+  },
+  "schema_version": "1.0"
+}

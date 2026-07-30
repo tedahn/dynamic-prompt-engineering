@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-adapter-request.schema.json",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "adapter_kind"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "adapter_kind": {"enum": ["subject", "grader", "canary"]},
+    "attempt": {"type": "integer", "minimum": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "cell": {"type": "object"},
+    "prompt": {"type": "string"},
+    "workspace_context": {"type": "string"},
+    "expected_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter_id", "adapter_runtime_sha256", "provider_id", "model_id", "settings_sha256", "fresh_session"],
+      "properties": {
+        "adapter_id": {"type": "string", "minLength": 1},
+        "adapter_runtime_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "provider_id": {"type": "string", "minLength": 1},
+        "model_id": {"type": "string", "minLength": 1},
+        "settings_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "fresh_session": {"const": true}
+      }
+    },
+    "blind_record": {"type": "object"},
+    "rubric": {"type": "object"},
+    "installed_skill": {"type": "string"}
+  }
+}

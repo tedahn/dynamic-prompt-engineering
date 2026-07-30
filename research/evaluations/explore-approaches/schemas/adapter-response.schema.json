@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-adapter-response.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_id", "request_sha256", "status"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "request_id": {"type": "string", "pattern": "^REQ-[a-f0-9]{32}$"},
+    "request_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "status": {"enum": ["completed", "transient_error", "permanent_error"]},
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter_id", "adapter_runtime_sha256", "provider_id", "model_id", "settings_sha256", "fresh_session"],
+      "properties": {
+        "adapter_id": {"type": "string", "minLength": 1},
+        "adapter_runtime_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "provider_id": {"type": "string", "minLength": 1},
+        "model_id": {"type": "string", "minLength": 1},
+        "settings_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "fresh_session": {"const": true}
+      }
+    },
+    "output": {"type": "object"},
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "latency_ms": {"type": "number", "minimum": 0},
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "cost_usd": {"type": ["number", "null"], "minimum": 0}
+      }
+    },
+    "error": {"type": "string"},
+    "trace": {"type": "object"},
+    "workspace_diff": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "completed"}}},
+      "then": {"required": ["output", "runtime", "telemetry"]}
+    },
+    {
+      "if": {"properties": {"status": {"enum": ["transient_error", "permanent_error"]}}},
+      "then": {"required": ["error"]}
+    }
+  ]
+}

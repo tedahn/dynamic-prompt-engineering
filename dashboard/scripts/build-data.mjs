@@ -127,7 +127,7 @@ function buildData() {
   const statefulLoopSeed = readJson("research/evaluations/codex-stateful-loop/state/seed-state-v1.json");
   const statefulLoopHoldout = readJson("research/evaluations/codex-stateful-loop/fixtures/holdout-manifest-v1.json");
   const contextComposerFixtures = parseJsonLines(read("research/evaluations/context-composer/fixtures/fixtures-v1.jsonl"));
-  const contextComposerSnapshot = readJson("research/evaluations/context-composer/results/mechanical-summary-2026-07-29.json");
+  const contextComposerSnapshot = readJson("research/evaluations/context-composer/results/mechanical-summary-2026-07-30.json");
   const fixtures = parseJsonLines(read("research/evaluations/professionalize-prompt/fixtures/fixtures-v1.jsonl"));
   const fixtureById = Object.fromEntries(fixtures.map((fixture) => [fixture.fixture_id, fixture]));
   const scoreRows = parseCsv(read("research/evaluations/professionalize-prompt/scores/score-ledger.csv"))
@@ -204,7 +204,7 @@ function buildData() {
     schemaVersion: "1.0",
     meta: {
       asOf,
-      generatedAt: new Date().toISOString().slice(0, 10),
+      generatedAt: asOf,
       snapshotId: staticAudit.snapshot_id,
       bundleSha256: pilotSource.skill_bundle_sha256,
       classification: staticAudit.classification,
@@ -289,6 +289,11 @@ function buildData() {
       behavioralEfficacy: contextComposerSnapshot.behavioral_efficacy,
       gateResult: contextComposerSnapshot.gate_result,
       fixtureCount: contextComposerFixtures.length,
+      negativeSecurityCases: typeof contextComposerSnapshot.negative_security_cases === "number"
+        ? contextComposerSnapshot.negative_security_cases
+        : contextComposerSnapshot.negative_security_cases?.count || 0,
+      gateInterpretation: contextComposerSnapshot.gate_interpretation,
+      claimDispositions: contextComposerSnapshot.claim_dispositions,
       families: countBy(contextComposerFixtures, "family"),
       conditions: Object.entries(contextComposerSnapshot.conditions).map(([id, metrics]) => ({ id, ...metrics })),
       limitations: contextComposerSnapshot.limitations
@@ -320,29 +325,23 @@ function loadCommittedData() {
 }
 
 function checkData(expected, actual) {
-  const checks = [
-    ["snapshot ID", expected.meta.snapshotId, actual.meta.snapshotId],
-    ["bundle SHA", expected.meta.bundleSha256, actual.meta.bundleSha256],
-    ["workflow IDs", expected.workflows.map((item) => item.id).join(","), actual.workflows.map((item) => item.id).join(",")],
-    ["ablation IDs", expected.ablations.map((item) => item.id).join(","), actual.ablations.map((item) => item.id).join(",")],
-    ["score rows", expected.scoreLedger.rows.length, actual.scoreLedger.rows.length],
-    ["fixtures", JSON.stringify(expected.fixtures), JSON.stringify(actual.fixtures)],
-    ["dynamic technique IDs", expected.dynamicTechniques.map((item) => item.id).join(","), actual.dynamicTechniques.map((item) => item.id).join(",")],
-    ["skill candidate IDs", expected.skillCandidates.map((item) => item.id).join(","), actual.skillCandidates.map((item) => item.id).join(",")],
-    ["ledger counts", JSON.stringify(Object.fromEntries(Object.entries(expected.ledgers).map(([key, value]) => [key, value.count]))), JSON.stringify(Object.fromEntries(Object.entries(actual.ledgers).map(([key, value]) => [key, value.count])))],
-    ["pilot state", `${expected.pilot.status}:${expected.pilot.executionCells}`, `${actual.pilot.status}:${actual.pilot.executionCells}`],
-    ["stateful loop", JSON.stringify(expected.statefulLoop), JSON.stringify(actual.statefulLoop)],
-    ["context composer", JSON.stringify(expected.contextComposer), JSON.stringify(actual.contextComposer)]
-  ];
-  const failures = checks.filter(([, expectedValue, actualValue]) => expectedValue !== actualValue);
-  if (failures.length) {
-    for (const [label, expectedValue, actualValue] of failures) {
-      console.error(`${label}: expected ${expectedValue}; committed ${actualValue}`);
+  const normalize = (value) => {
+    if (Array.isArray(value)) return value.map(normalize);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.keys(value).sort().map((key) => [key, normalize(value[key])]));
     }
+    return value;
+  };
+  const expectedNormalized = JSON.stringify(normalize(expected));
+  const actualNormalized = JSON.stringify(normalize(actual));
+  if (expectedNormalized !== actualNormalized) {
+    const changedSections = [...new Set([...Object.keys(expected), ...Object.keys(actual)])]
+      .filter((key) => JSON.stringify(normalize(expected[key])) !== JSON.stringify(normalize(actual[key])));
+    console.error(`dashboard data differs in: ${changedSections.join(", ") || "root"}`);
     process.exitCode = 1;
     return;
   }
-  console.log(`dashboard data check passed: ${checks.length} source-derived invariants`);
+  console.log("dashboard data check passed: complete normalized artifact");
 }
 
 try {

@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "review_id": "REPLACE",
+  "target": {"base_sha": "REPLACE", "head_sha": "REPLACE", "diff_sha256": "REPLACE"},
+  "decision_owner": "REPLACE",
+  "actor_type": "human",
+  "decision": "deferred",
+  "decided_at": "REPLACE",
+  "rationale": "REPLACE",
+  "conditions": [],
+  "dissent": [],
+  "reversal_evidence": ["A material target or evidence change"],
+  "authorized_actions": ["REPLACE"],
+  "forbidden_actions": ["Skill installation or production promotion unless separately approved"]
+}

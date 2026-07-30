@@ -7,6 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_pilot.py"
@@ -91,12 +92,225 @@ class RunPilotTests(unittest.TestCase):
             auth_home.mkdir()
             (auth_home / "auth.json").write_text("{}\n", encoding="utf-8")
             runtime_root = root / "runtime"
-            environment = RUNNER.isolated_environment(auth_home, runtime_root)
+            runtime_root.mkdir()
+            workspace = root / "workspace"
+            tool_temp = workspace / ".pilot-runtime-tmp"
+            tool_temp.mkdir(parents=True)
+            environment = RUNNER.isolated_environment(
+                auth_home,
+                runtime_root,
+                temporary_dir=tool_temp,
+                tool_readable_roots=(workspace, tool_temp),
+            )
             runtime_home = Path(environment["CODEX_HOME"])
             self.assertNotEqual(runtime_home, auth_home)
             self.assertTrue((runtime_home / "auth.json").is_symlink())
             self.assertFalse((runtime_home / "skills").exists())
             self.assertFalse((runtime_home / "config.toml").exists())
+            self.assertFalse(runtime_home.is_relative_to(workspace))
+            self.assertTrue(Path(environment["HOME"]).is_relative_to(tool_temp.resolve()))
+            self.assertNotEqual(environment["HOME"], environment["CODEX_HOME"])
+
+    def test_workspace_policy_cell_cannot_locate_or_read_auth_material(self) -> None:
+        synthetic_auth = b'{"synthetic-auth-marker":"not-a-real-credential"}\n'
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            codex_home = root / "isolated-codex-home"
+            codex_home.mkdir()
+            (codex_home / "auth.json").write_bytes(synthetic_auth)
+            cli = self._write_fake_codex(root / "codex")
+            run_dir = root / "run"
+            row = next(
+                item
+                for item in RUNNER.generate_preflight_plan(self.inputs, "auth-boundary-test")
+                if item["tool_policy"] == "workspace"
+            )
+
+            result = RUNNER.execute_cell(
+                run_dir=run_dir,
+                inputs=self.inputs,
+                row=row,
+                cli_path=cli,
+                codex_home=codex_home,
+                max_retries=0,
+                timeout_seconds=5,
+                retry_backoff_seconds=(),
+                cli_version="codex-cli test",
+            )
+
+            self.assertEqual(result["status"], "completed")
+            reports = RUNNER.load_jsonl(root / "workspace-auth-checks.jsonl")
+            self.assertEqual(len(reports), 1)
+            self.assertEqual(
+                reports[0],
+                {
+                    "auth_content_found": False,
+                    "auth_name_found": False,
+                    "codex_home_exposed": False,
+                    "runtime_home_under_tool_root": False,
+                    "source_auth_under_tool_root": False,
+                },
+            )
+            self.assertNotIn(
+                synthetic_auth,
+                b"".join(
+                    path.read_bytes()
+                    for path in run_dir.rglob("*")
+                    if path.is_file() and not path.is_symlink()
+                ),
+            )
+
+    def test_auth_target_inside_tool_root_is_rejected_before_runtime_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workspace = root / "workspace"
+            tool_temp = workspace / ".pilot-runtime-tmp"
+            tool_temp.mkdir(parents=True)
+            auth_target = workspace / "exposed-auth.json"
+            auth_target.write_text('{"synthetic":"only"}\n', encoding="utf-8")
+            auth_home = root / "auth-home"
+            auth_home.mkdir()
+            (auth_home / "auth.json").symlink_to(auth_target)
+            runtime_root = root / "runtime"
+            runtime_root.mkdir()
+
+            with self.assertRaisesRegex(
+                RUNNER.PilotError, "Authentication home overlaps a tool-readable root"
+            ):
+                RUNNER.isolated_environment(
+                    auth_home,
+                    runtime_root,
+                    temporary_dir=tool_temp,
+                    tool_readable_roots=(workspace, tool_temp),
+                )
+
+            self.assertFalse((runtime_root / "codex-home").exists())
+
+    def test_tool_root_symlink_alias_to_auth_home_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            auth_home = root / "auth-home"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text(
+                '{"synthetic":"only"}\n', encoding="utf-8"
+            )
+            workspace = root / "workspace"
+            tool_temp = workspace / ".pilot-runtime-tmp"
+            tool_temp.mkdir(parents=True)
+            (workspace / "auth-home-alias").symlink_to(
+                auth_home, target_is_directory=True
+            )
+            runtime_root = root / "runtime"
+            runtime_root.mkdir()
+
+            with self.assertRaisesRegex(
+                RUNNER.PilotError,
+                "Tool-readable root contains an alias to authentication material",
+            ):
+                RUNNER.isolated_environment(
+                    auth_home,
+                    runtime_root,
+                    temporary_dir=tool_temp,
+                    tool_readable_roots=(workspace, tool_temp),
+                )
+
+            self.assertFalse((runtime_root / "codex-home").exists())
+
+    def test_runtime_inspection_cleans_root_after_setup_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            auth_home = root / "auth-home"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}\n", encoding="utf-8")
+            cli = self._write_fake_codex(root / "codex")
+            inspection_root = root / "inspection-runtime"
+
+            def create_inspection_root(*, prefix: str) -> str:
+                self.assertEqual(prefix, "pilot-v2-runtime-inspect-")
+                inspection_root.mkdir()
+                return str(inspection_root)
+
+            with mock.patch.object(
+                RUNNER.tempfile, "mkdtemp", side_effect=create_inspection_root
+            ), mock.patch.object(
+                RUNNER,
+                "isolated_environment",
+                side_effect=RUNNER.PilotError("injected setup failure"),
+            ):
+                readiness = RUNNER.inspect_runtime(cli, auth_home)
+
+            self.assertFalse(readiness["ok"])
+            self.assertIn(
+                "Runtime readiness check failed: PilotError", readiness["errors"]
+            )
+            self.assertFalse(inspection_root.exists())
+
+    def test_runtime_inspection_cleans_root_after_child_process_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            auth_home = root / "auth-home"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}\n", encoding="utf-8")
+            cli = self._write_fake_codex(root / "codex")
+            inspection_root = root / "inspection-runtime"
+
+            def create_inspection_root(*, prefix: str) -> str:
+                self.assertEqual(prefix, "pilot-v2-runtime-inspect-")
+                inspection_root.mkdir()
+                return str(inspection_root)
+
+            with mock.patch.object(
+                RUNNER.tempfile, "mkdtemp", side_effect=create_inspection_root
+            ), mock.patch.object(
+                RUNNER.subprocess, "run", side_effect=OSError("injected child failure")
+            ):
+                readiness = RUNNER.inspect_runtime(cli, auth_home)
+
+            self.assertFalse(readiness["ok"])
+            self.assertIn(
+                "Runtime readiness check failed: OSError", readiness["errors"]
+            )
+            self.assertFalse(inspection_root.exists())
+
+    def test_cell_runtime_is_cleaned_after_child_process_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            auth_home = root / "auth-home"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}\n", encoding="utf-8")
+            run_dir = root / "run"
+            runtime_root = root / "cell-runtime"
+            row = next(
+                item
+                for item in RUNNER.generate_preflight_plan(self.inputs, "cleanup-test")
+                if item["tool_policy"] == "workspace"
+            )
+
+            def create_cell_runtime(*, prefix: str, dir: Path) -> str:
+                self.assertEqual(prefix, "pilot-v2-cell-runtime-")
+                self.assertEqual(Path(dir).resolve(), auth_home.parent.resolve())
+                runtime_root.mkdir()
+                return str(runtime_root)
+
+            with mock.patch.object(
+                RUNNER.tempfile, "mkdtemp", side_effect=create_cell_runtime
+            ), mock.patch.object(
+                RUNNER, "_invoke_cli", side_effect=OSError("injected child failure")
+            ):
+                with self.assertRaisesRegex(OSError, "injected child failure"):
+                    RUNNER.execute_cell(
+                        run_dir=run_dir,
+                        inputs=self.inputs,
+                        row=row,
+                        cli_path=root / "codex",
+                        codex_home=auth_home,
+                        max_retries=0,
+                        timeout_seconds=5,
+                        retry_backoff_seconds=(),
+                        cli_version="codex-cli test",
+                    )
+
+            self.assertFalse(runtime_root.exists())
 
     def test_codex_command_freezes_model_effort_features_and_policy(self) -> None:
         common = set(RUNNER.COMMON_FEATURE_DISABLES)
@@ -117,6 +331,9 @@ class RunPilotTests(unittest.TestCase):
         self.assertEqual(disabled(workspace_command), common)
         self.assertIn("gpt-5.6-sol", none_command)
         self.assertIn('model_reasoning_effort="high"', none_command)
+        self.assertIn(
+            'shell_environment_policy.exclude=["CODEX_HOME"]', workspace_command
+        )
         self.assertEqual(none_command[none_command.index("--sandbox") + 1], "read-only")
         self.assertEqual(
             workspace_command[workspace_command.index("--sandbox") + 1], "workspace-write"
@@ -208,7 +425,9 @@ class RunPilotTests(unittest.TestCase):
             root = Path(temp_dir)
             codex_home = root / "isolated-codex-home"
             codex_home.mkdir()
-            (codex_home / "auth.json").write_text("{}\n", encoding="utf-8")
+            (codex_home / "auth.json").write_text(
+                '{"synthetic-auth-marker":"not-a-real-credential"}\n', encoding="utf-8"
+            )
             cli = self._write_fake_codex(root / "codex")
             run_dir = root / "run"
 
@@ -286,6 +505,48 @@ if args[:2] == ["features", "list"]:
         print(f"{{name:<44}} stable             true")
     raise SystemExit(0)
 if "exec" in args:
+    workspace = Path(args[args.index("--cd") + 1]).resolve()
+    sandbox = args[args.index("--sandbox") + 1]
+    if sandbox == "workspace-write":
+        configs = [args[index + 1] for index, value in enumerate(args) if value == "--config"]
+        tool_env = dict(os.environ)
+        if 'shell_environment_policy.exclude=["CODEX_HOME"]' in configs:
+            tool_env.pop("CODEX_HOME", None)
+        tool_roots = [
+            workspace,
+            Path(tool_env["HOME"]).resolve(),
+            Path(tool_env["TMPDIR"]).resolve(),
+        ]
+        runtime_home = home.resolve()
+        source_auth = (home / "auth.json").resolve()
+        auth_bytes = source_auth.read_bytes()
+        auth_name_found = False
+        auth_content_found = False
+        for root in tool_roots:
+            for candidate in root.rglob("*"):
+                if candidate.name == "auth.json":
+                    auth_name_found = True
+                if candidate.is_file() and not candidate.is_symlink():
+                    try:
+                        auth_content_found = auth_content_found or auth_bytes in candidate.read_bytes()
+                    except OSError:
+                        pass
+        report = {{
+            "auth_content_found": auth_content_found,
+            "auth_name_found": auth_name_found,
+            "codex_home_exposed": "CODEX_HOME" in tool_env,
+            "runtime_home_under_tool_root": any(
+                runtime_home == root or runtime_home.is_relative_to(root) for root in tool_roots
+            ),
+            "source_auth_under_tool_root": any(
+                source_auth == root or source_auth.is_relative_to(root) for root in tool_roots
+            ),
+        }}
+        report_path = Path(sys.argv[0]).resolve().parent / "workspace-auth-checks.jsonl"
+        with report_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(report, sort_keys=True) + "\\n")
+        if any(report.values()):
+            raise SystemExit(19)
     counter = Path(sys.argv[0]).resolve().parent / "exec-count.txt"
     count = int(counter.read_text()) + 1 if counter.exists() else 1
     counter.write_text(str(count))

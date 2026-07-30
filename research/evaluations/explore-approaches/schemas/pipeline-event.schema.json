@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-pipeline-event.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "stream", "version", "idempotency_key", "event_type", "actor", "occurred_at", "payload", "previous_hash", "next_state", "event_hash"],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1},
+    "stream": {"type": "string", "minLength": 1},
+    "version": {"type": "integer", "minimum": 1},
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "event_type": {"type": "string", "minLength": 1},
+    "actor": {"type": "string", "minLength": 1},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "payload": {"type": "object"},
+    "previous_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "next_state": {"type": "string", "minLength": 1},
+    "event_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

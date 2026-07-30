@@ -10,6 +10,10 @@ from pathlib import Path
 
 AUTHORITY = {"canonical": 3.0, "primary": 2.0, "secondary": 1.0, "untrusted": 0.0}
 FRESHNESS = {"current": 2.0, "undated": 0.5, "stale": -3.0, "superseded": -5.0}
+TRUSTED_METADATA_PRODUCERS = {"context-fixture-author-v1", "workspace-evidence-indexer-v1"}
+TRUST = {"trusted", "untrusted"}
+SENSITIVITY = {"public", "internal", "confidential", "secret"}
+CONTENT_TYPES = {"evidence", "instruction"}
 FULL_CONTEXT_ITEM_LIMIT = 4
 
 
@@ -26,27 +30,64 @@ def token_count(item: dict) -> int:
 
 
 def validate(payload: dict) -> None:
+    if not isinstance(payload, dict):
+        raise ContractError("payload must be an object")
     required = {"query", "max_tokens", "allowed_scopes", "items"}
     missing = required - payload.keys()
     if missing:
         raise ContractError(f"missing fields: {sorted(missing)}")
     if not isinstance(payload["query"], str) or not payload["query"].strip():
         raise ContractError("query must be nonempty")
-    if not isinstance(payload["max_tokens"], int) or payload["max_tokens"] <= 0:
+    if not isinstance(payload["max_tokens"], int) or isinstance(payload["max_tokens"], bool) or payload["max_tokens"] <= 0:
         raise ContractError("max_tokens must be a positive integer")
     if not isinstance(payload["allowed_scopes"], list) or not payload["allowed_scopes"]:
         raise ContractError("allowed_scopes must be a nonempty list")
+    if any(not isinstance(scope, str) or not scope.strip() for scope in payload["allowed_scopes"]):
+        raise ContractError("allowed_scopes must contain nonempty strings")
+    signals = payload.get("signals", {})
+    if not isinstance(signals, dict):
+        raise ContractError("signals must be an object")
+    allowed_signals = {"needs_clarification", "update_sensitive", "allow_stale_history"}
+    if set(signals) - allowed_signals:
+        raise ContractError(f"signals has unsupported fields: {sorted(set(signals) - allowed_signals)}")
+    if any(not isinstance(value, bool) for value in signals.values()):
+        raise ContractError("signal values must be boolean")
     if not isinstance(payload["items"], list):
         raise ContractError("items must be a list")
     ids = []
     for index, item in enumerate(payload["items"]):
-        for field in ("id", "text", "scope", "status", "authority"):
+        if not isinstance(item, dict):
+            raise ContractError(f"item {index} must be an object")
+        for field in ("id", "text", "source", "scope", "status", "authority", "security"):
             if field not in item:
                 raise ContractError(f"item {index} missing {field}")
-        if item["authority"] not in AUTHORITY:
+        for field in ("id", "text", "source", "scope"):
+            if not isinstance(item[field], str) or not item[field].strip():
+                raise ContractError(f"item {index} {field} must be a nonempty string")
+        if not isinstance(item["authority"], str) or item["authority"] not in AUTHORITY:
             raise ContractError(f"item {item['id']} has unsupported authority")
-        if item["status"] not in FRESHNESS:
+        if not isinstance(item["status"], str) or item["status"] not in FRESHNESS:
             raise ContractError(f"item {item['id']} has unsupported status")
+        security = item["security"]
+        required_security = {"producer", "trust", "sensitivity", "content_type"}
+        if not isinstance(security, dict) or set(security) != required_security:
+            raise ContractError(f"item {item['id']} security metadata must contain exactly {sorted(required_security)}")
+        if not isinstance(security["producer"], str) or security["producer"] not in TRUSTED_METADATA_PRODUCERS:
+            raise ContractError(f"item {item['id']} has an untrusted metadata producer")
+        if not isinstance(security["trust"], str) or security["trust"] not in TRUST:
+            raise ContractError(f"item {item['id']} has unsupported trust metadata")
+        if not isinstance(security["sensitivity"], str) or security["sensitivity"] not in SENSITIVITY:
+            raise ContractError(f"item {item['id']} has unsupported sensitivity metadata")
+        if not isinstance(security["content_type"], str) or security["content_type"] not in CONTENT_TYPES:
+            raise ContractError(f"item {item['id']} has unsupported content_type metadata")
+        if "injection" in item and not isinstance(item["injection"], bool):
+            raise ContractError(f"item {item['id']} injection must be boolean")
+        for field in ("retrieval_terms", "depends_on"):
+            if field in item and (
+                not isinstance(item[field], list)
+                or any(not isinstance(value, str) or not value for value in item[field])
+            ):
+                raise ContractError(f"item {item['id']} {field} must contain nonempty strings")
         ids.append(item["id"])
     if len(ids) != len(set(ids)):
         raise ContractError("item IDs must be unique")
@@ -99,6 +140,12 @@ def filter_items(payload: dict) -> tuple[list[dict], list[dict]]:
         reason = None
         if item["scope"] not in payload["allowed_scopes"]:
             reason = "disallowed_scope"
+        elif item["security"]["trust"] != "trusted":
+            reason = "untrusted_source"
+        elif item["security"]["sensitivity"] == "secret":
+            reason = "secret"
+        elif item["security"]["content_type"] == "instruction":
+            reason = "instruction_bearing"
         elif item.get("injection", False):
             reason = "retrieved_injection"
         elif item["status"] == "superseded":
@@ -149,7 +196,7 @@ def compose(payload: dict) -> dict:
             continue
         size = token_count(item)
         if used + size <= payload["max_tokens"]:
-            selected.append({"id": item["id"], "text": item["text"], "source": item.get("source", ""), "authority": item["authority"], "status": item["status"], "scope": item["scope"], "depends_on": item.get("depends_on", []), "approx_tokens": size, "relevance": round(relevance(payload["query"], item), 4)})
+            selected.append({"id": item["id"], "text": item["text"], "source": item["source"], "security": dict(item["security"]), "authority": item["authority"], "status": item["status"], "scope": item["scope"], "timestamp": item.get("timestamp", ""), "depends_on": item.get("depends_on", []), "approx_tokens": size, "relevance": round(relevance(payload["query"], item), 4)})
             used += size
         else:
             omitted.append({"id": item["id"], "reason": "budget"})

@@ -1,0 +1,421 @@
+{
+  "authority": {
+    "authorized": [
+      "read frozen target",
+      "run local deterministic checks",
+      "submit review artifacts"
+    ],
+    "forbidden": [
+      "modify target",
+      "merge",
+      "install",
+      "promote",
+      "deploy",
+      "external side effects"
+    ]
+  },
+  "built_at": "2026-07-30T05:38:48Z",
+  "changed_files": [
+    "README.md",
+    "dashboard/BUILD_SPEC.md",
+    "dashboard/app.js",
+    "dashboard/data.js",
+    "dashboard/index.html",
+    "dashboard/scripts/build-data.mjs",
+    "dashboard/tests/dashboard.test.mjs",
+    "research/CONTINUATION_PROMPT-2026-07-29-full-completion.md",
+    "research/NEXT_ACTION-001.md",
+    "research/RESEARCH_BRIEF-prompt-techniques-as-skills.md",
+    "research/SURFACE_REGISTRY.md",
+    "research/TECHNIQUE_TAXONOMY.md",
+    "research/evaluations/context-composer/BUILD_SPEC.md",
+    "research/evaluations/context-composer/PROTOCOL.md",
+    "research/evaluations/context-composer/README.md",
+    "research/evaluations/context-composer/config/context-composer-v1.json",
+    "research/evaluations/context-composer/fixtures/fixtures-v1.jsonl",
+    "research/evaluations/context-composer/results/mechanical-summary-2026-07-29.json",
+    "research/evaluations/context-composer/schemas/fixture.schema.json",
+    "research/evaluations/context-composer/scripts/context_eval.py",
+    "research/evaluations/context-composer/tests/test_context_eval.py",
+    "research/evaluations/explore-approaches/PROMOTION.md",
+    "research/evaluations/explore-approaches/PROTOCOL.md",
+    "research/evaluations/explore-approaches/WORKING_SPEC.md",
+    "research/evaluations/explore-approaches/fixtures/fixtures-v1.jsonl",
+    "research/evaluations/explore-approaches/results/forward-test-2026-07-29.md",
+    "research/evaluations/explore-approaches/rubrics/rubric-v1.json",
+    "research/evaluations/explore-approaches/schemas/promotion-approval.schema.json",
+    "research/evaluations/explore-approaches/scripts/check_candidate.py",
+    "research/evaluations/explore-approaches/tests/test_check_candidate.py",
+    "research/evaluations/professionalize-prompt/pilot-v2/approvals/REPLACEMENT-PREFLIGHT-001.md",
+    "research/evaluations/professionalize-prompt/pilot-v2/experiments/EXP-PP-V2-PILOT.json",
+    "research/evaluations/professionalize-prompt/pilot-v2/results/PREFLIGHT-INFRA-2026-07-29.json",
+    "research/evaluations/professionalize-prompt/pilot-v2/scripts/run_pilot.py",
+    "research/evaluations/professionalize-prompt/pilot-v2/tests/test_run_pilot.py",
+    "research/ledgers/assumptions-forecasts.csv",
+    "research/ledgers/change-log.csv",
+    "research/ledgers/claims.csv",
+    "research/ledgers/eval-cases.csv",
+    "research/ledgers/sources.csv",
+    "research/skill-candidates/T-005-context-composer.md",
+    "research/skill-candidates/T-019-explore-approaches.md",
+    "research/technique-profiles/T-005-context-composer.md",
+    "research/technique-profiles/T-019-workspace-grounded-approach-exploration.md",
+    "skills/context-composer/SKILL.md",
+    "skills/context-composer/agents/openai.yaml",
+    "skills/context-composer/references/contract.md",
+    "skills/context-composer/scripts/compose_context.py",
+    "skills/explore-approaches/SKILL.md",
+    "skills/explore-approaches/agents/openai.yaml"
+  ],
+  "decision": "merge_readiness",
+  "decision_owner": "Ted Ahn",
+  "evidence_index": [
+    {
+      "base_sha256": "f9108f13372082f7df4ad88dda4757ca43442cf52439dd73cdd6acb6baadd999",
+      "head_sha256": "919cabed5c5891552936d0d807ebcf71824168f6fb77f0fb82ca3a834f3d6bca",
+      "path": "README.md",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "d7a398d9db3254e84d34706b51002449e9f7bb502d3bdf21b7afba3a55f3dbd3",
+      "head_sha256": "d88f9133e4608633d2e8ed0abf15c5207504f6a30bace1287fd983e1a8866658",
+      "path": "dashboard/BUILD_SPEC.md",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "3d1023e7cc6efb036a765018159101bbe155a3057a44ea1154b4f0347813661f",
+      "head_sha256": "578243ac93860021e5bd9251abc47aa5dff86e384b59f8b35d1d322abe7e498a",
+      "path": "dashboard/app.js",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "e681d2ca0730494277bdcc62227b4413335015891a601e4bc822489aba3b98b9",
+      "head_sha256": "5a0bc177f8af56e6fa1c42c6c223aa7325175f3f41965c0d382995cdcf70a3ff",
+      "path": "dashboard/data.js",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "65e20a4255c58ecf91a781c4eb89b455da02bf2752e6f8232dbfee4d5a0962ad",
+      "head_sha256": "57237d2208138314243bf35777a93221bba5e525d5bb8390c8e040375dde703f",
+      "path": "dashboard/index.html",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "2660cf03a0ac0be0b95ca0710d13b70598116b318d72fda5d7abeff50578caf3",
+      "head_sha256": "23deeeac04f2d2fb9e96f14f54a347d3e710fc494087d78c57dbe1542b5bc230",
+      "path": "dashboard/scripts/build-data.mjs",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "e4f8e58c80daa93f8372f6f3780b1874dba25ab2fd65aa05b05964eb9e5118b3",
+      "head_sha256": "e19bb5e3a7d3eecc6444b055c1ead513fa877a187389ebcaa26d445232f0810b",
+      "path": "dashboard/tests/dashboard.test.mjs",
+      "state": "modified"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "7f4ec6ebb1334e083b7a2a88cc8d63263a15db3cbc8cced5c1a81d0497d5e310",
+      "path": "research/CONTINUATION_PROMPT-2026-07-29-full-completion.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": "4e766f96d51e10d8796b82300ffffe620da63aedef118aa76ba73a9462b80e5c",
+      "head_sha256": "d93d75b1bbfbb18d18a897a04b94ce3dbf5d314cbcea09a42bf1e2d624427432",
+      "path": "research/NEXT_ACTION-001.md",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "0fae2fe5903645c81acbf9d4a068050c3d1bbeccef4aad5a32b9a9fc6dea312e",
+      "head_sha256": "e0f0090014a3a823c4ceb0b037a3be424ee2851ea27355807a8f0d1e0763a8fa",
+      "path": "research/RESEARCH_BRIEF-prompt-techniques-as-skills.md",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "bcf500279e43fcdc7c421d1cb908f887ac58398eee3013bb90d90709c358636d",
+      "head_sha256": "2662d67c8c97921968b5cf958c0e63ad1e0454b86f6ea6362494a1cc8f987248",
+      "path": "research/SURFACE_REGISTRY.md",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "30b1073b9ea314fa6980513b25245c02a223d481b39c999ac02bd644fbb461c9",
+      "head_sha256": "8f3368522d543ad63319117fc424847594f5170347f9609ae9ee37da5cd3ee0c",
+      "path": "research/TECHNIQUE_TAXONOMY.md",
+      "state": "modified"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "c5512ca7a3f3dfcd29a3c1bd0cdc3f4f50b620eec4de83b1ff58a4187065bd4c",
+      "path": "research/evaluations/context-composer/BUILD_SPEC.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "258b8a9ab232f5208ac35ffa5bcc343c62ab9975024bbcc7677d0089f97fddb5",
+      "path": "research/evaluations/context-composer/PROTOCOL.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "37ae38880fdd0dc0da516d8450945f14afd787137b6f482043875061a327d809",
+      "path": "research/evaluations/context-composer/README.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "7356a7c803f6e8ad0245b552eb3733e8100ea1498862f3eb71b81cb2af357801",
+      "path": "research/evaluations/context-composer/config/context-composer-v1.json",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "1c2d66cfa207ebfe4e6fd5834ffb48341c55a0725f696e3681562074e18cfd53",
+      "path": "research/evaluations/context-composer/fixtures/fixtures-v1.jsonl",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "2ec156c3cbddcd34b19d6c9583d98e8c80344d64434018edc6ed1f4bb93f7487",
+      "path": "research/evaluations/context-composer/results/mechanical-summary-2026-07-29.json",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "69a75af503359dad2fd7120e80c0ee094f00fabead005db3736110f9f4406775",
+      "path": "research/evaluations/context-composer/schemas/fixture.schema.json",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "b2deb5d499abba679967a9be6f6e1231e4cf88a54fc53e54f48b3558a185b595",
+      "path": "research/evaluations/context-composer/scripts/context_eval.py",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "e8a600d099a4f4f1e5d033f35452ae4c0f42cd1fbe19eeee655021e63403bb93",
+      "path": "research/evaluations/context-composer/tests/test_context_eval.py",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "6caaea10b9ad2ef588587f891bdcd83be3ef9ef95525428f54bc704635646c9a",
+      "path": "research/evaluations/explore-approaches/PROMOTION.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "3257f85308dfa3c365ebb91e38aa8fc61fafd2baaf05bda0020ca329aa00ed86",
+      "path": "research/evaluations/explore-approaches/PROTOCOL.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "1432c151e4d25aef107af850496d643fe5a425ea87a4515588329b41f8e0d2ec",
+      "path": "research/evaluations/explore-approaches/WORKING_SPEC.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "54890312946986f07beca895ae3396d168093d31430f6ca950feb47e28f352f0",
+      "path": "research/evaluations/explore-approaches/fixtures/fixtures-v1.jsonl",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "a86a34f07614b830f5fb2791a46c87e5997dd5273f042622a85e285e4a389292",
+      "path": "research/evaluations/explore-approaches/results/forward-test-2026-07-29.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "1f0459e6772bc295576e5f92b27ed9fd5e98128d766f1be6c16b11ca15ffc15c",
+      "path": "research/evaluations/explore-approaches/rubrics/rubric-v1.json",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "67d39454d9a8daef6df472fa90e25ccd25e9654d2fb4516f86a45667eb1b9613",
+      "path": "research/evaluations/explore-approaches/schemas/promotion-approval.schema.json",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "aeeb65e60902137c6a380bd01c68bee403ba608a3d2ef7f649c1889aeb598c35",
+      "path": "research/evaluations/explore-approaches/scripts/check_candidate.py",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "00393dbd3151c8e949bc1332aca7a87597c444910a824dd65e3df097d825cca0",
+      "path": "research/evaluations/explore-approaches/tests/test_check_candidate.py",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "ffddde60acc926ecf2c46d9e7f8b449da96925b875ee0769b027a886cfd04988",
+      "path": "research/evaluations/professionalize-prompt/pilot-v2/approvals/REPLACEMENT-PREFLIGHT-001.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": "1504689b27f03e16bcf88dd99b7beeae2f65dde6884542e8e539b961779e4c02",
+      "head_sha256": "385b95f489917206a9a57d5dfef63f3fc91d73286db016a6f9f7e99b2881d14f",
+      "path": "research/evaluations/professionalize-prompt/pilot-v2/experiments/EXP-PP-V2-PILOT.json",
+      "state": "modified"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "54a1b94fa7d0a10fc882e7c6765c62f3ba466025a01dc46027b5072681b310ee",
+      "path": "research/evaluations/professionalize-prompt/pilot-v2/results/PREFLIGHT-INFRA-2026-07-29.json",
+      "state": "added"
+    },
+    {
+      "base_sha256": "3a977e0766d032298dbde1fc1efa8b91379f58de89646c971dea41c1c8c6ada8",
+      "head_sha256": "aade1673c4dd0f2dab12ab186d354325bf72f646b1a42205be90cf543e7ac7aa",
+      "path": "research/evaluations/professionalize-prompt/pilot-v2/scripts/run_pilot.py",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "5c8a4c07379a60d79e4c0bb2d5ef27a201996f00cef5a1a47377d0731f918a11",
+      "head_sha256": "fe859e4adf8e18a2562bc5df33150b998c72e1ff06ab89f3c1c559e30135d79b",
+      "path": "research/evaluations/professionalize-prompt/pilot-v2/tests/test_run_pilot.py",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "7943f33b663ab07b078e0c915fc6c7f585ae2ff50513ca990896bec27e003099",
+      "head_sha256": "47779482002b8f1cabaf82032170143570fc5205d60b4ed74cc0b3f63c83d0b8",
+      "path": "research/ledgers/assumptions-forecasts.csv",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "29d239f9aa4f0fcba8227fb33a6da510054054e7ac0d79f8b322cded3d02fff2",
+      "head_sha256": "da90c11a4441c4beace2e4acdde3941fdad02b4fabd02f33444a76909d33c273",
+      "path": "research/ledgers/change-log.csv",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "ddbc24374136b5ed6b09c95b0a243ed9f1de35acfcea24b5d720e7e265957baa",
+      "head_sha256": "f3b84c0d82e37541bb54777aa140e4f0930fd8d30aa687e36e749394e807fdef",
+      "path": "research/ledgers/claims.csv",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "98ed4039933cecb25056445f644f2f751730f47f33a1379b10b7b7cc99b27e01",
+      "head_sha256": "a080364727018043cc9ef2ed1f05f28e5c1a8242b843098ae1e6d7909cee08f8",
+      "path": "research/ledgers/eval-cases.csv",
+      "state": "modified"
+    },
+    {
+      "base_sha256": "652446d8ff3d75fa9c545c2718605613c7516901d3436bf2dccc7bfe17ae2a2d",
+      "head_sha256": "a05f0fe53137a43a01749d59d7a0a7789f13133d2fd893e5e987f68fae640ba3",
+      "path": "research/ledgers/sources.csv",
+      "state": "modified"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "3ba6d051169961d6221ea48f2b01c0ceb31a679b3d069cbeb2869ccb16be302d",
+      "path": "research/skill-candidates/T-005-context-composer.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "5b758394c8187c4a2831d8e31669a18e3f9717f404c02c8d280cd69857f9946e",
+      "path": "research/skill-candidates/T-019-explore-approaches.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": "711686c1e4ac87ec770f0e411e5c974f550e5c410d6288f294dace90036eeea5",
+      "head_sha256": "be211f7914bb0dc567e863ae30e1e6f247c33ffce36c3dc4cb65124d5415a5d3",
+      "path": "research/technique-profiles/T-005-context-composer.md",
+      "state": "modified"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "2b7ec00d63c727c0cfd1a60bb384cc1a513568a5b4d6cbfe302ee59fdec36c49",
+      "path": "research/technique-profiles/T-019-workspace-grounded-approach-exploration.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "26e2fb2d7edcecb0317cc18c09a4d2becf53a260627b037f30b681b8948d13e6",
+      "path": "skills/context-composer/SKILL.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "c32041c6b867ec25c05e3dbf4c048f65186fa1c5d367dc26f7170f5ebdd460e6",
+      "path": "skills/context-composer/agents/openai.yaml",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "fd3b95b4b8264f81f64dee2c8a16ea2630488576ad8e9a522bbc3226f3634333",
+      "path": "skills/context-composer/references/contract.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "6027f12c0a80cce5a9b3c29e0ebe5814656cad7e9ab790040f0a8c1de9cf0ba1",
+      "path": "skills/context-composer/scripts/compose_context.py",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "9d0a24bdaa0a02c5632a170c19eedd3ab742ffb8e6c86333a30acfa32e508f0c",
+      "path": "skills/explore-approaches/SKILL.md",
+      "state": "added"
+    },
+    {
+      "base_sha256": null,
+      "head_sha256": "4843e4c3081c6fa24b1171894925421d237ca7f14b62529efa2834278e1d18b9",
+      "path": "skills/explore-approaches/agents/openai.yaml",
+      "state": "added"
+    }
+  ],
+  "known_validation": [
+    "67 Python evaluation tests passed before publication",
+    "9 dashboard tests and 12 source-derived invariants passed",
+    "Both published candidate skills passed structural validation",
+    "Secret identity-path private-endpoint and whitespace checks passed"
+  ],
+  "policy_index": [
+    {
+      "base_sha256": "46c85f4f978773e98bc1206650af1711b4e7feec2b1bdd9157315a0503b24c17",
+      "head_sha256": "46c85f4f978773e98bc1206650af1711b4e7feec2b1bdd9157315a0503b24c17",
+      "path": "AGENTS.md",
+      "state": "unchanged"
+    },
+    {
+      "base_sha256": "8ec208148800766ca3c96481dd37d068ed5102823e68444fcb9a7e75c176254f",
+      "head_sha256": "8ec208148800766ca3c96481dd37d068ed5102823e68444fcb9a7e75c176254f",
+      "path": "chatgpt-project/handbook/CONTINUOUS_IMPROVEMENT.md",
+      "state": "unchanged"
+    },
+    {
+      "base_sha256": "5fd9b6d88efe8f88f23bbde73b1010b884fc2ba74e8cc5fa630234328f6506c5",
+      "head_sha256": "5fd9b6d88efe8f88f23bbde73b1010b884fc2ba74e8cc5fa630234328f6506c5",
+      "path": "chatgpt-project/handbook/EVIDENCE_GOVERNANCE.md",
+      "state": "unchanged"
+    },
+    {
+      "base_sha256": "0fae2fe5903645c81acbf9d4a068050c3d1bbeccef4aad5a32b9a9fc6dea312e",
+      "head_sha256": "e0f0090014a3a823c4ceb0b037a3be424ee2851ea27355807a8f0d1e0763a8fa",
+      "path": "research/RESEARCH_BRIEF-prompt-techniques-as-skills.md",
+      "state": "modified"
+    }
+  ],
+  "pull_request": 1,
+  "repository": "tedahn/dynamic-prompt-engineering",
+  "requested_by": "Ted Ahn via Codex task 2026-07-30",
+  "required_roles": [
+    "evidence-methodology",
+    "engineering-reproducibility",
+    "skill-safety-operations"
+  ],
+  "review_id": "PR-001-8371f0f9634b",
+  "schema_version": "1.0",
+  "target": {
+    "base_sha": "506850f0d4cf7b21990231b40c560864fd82e9e2",
+    "diff_sha256": "24048aec899e9298b8fa5b08893e428e9de03aba518f9a99431f565c9a7943ca",
+    "head_sha": "8371f0f9634bf86e3417bae09772418034239969"
+  }
+}

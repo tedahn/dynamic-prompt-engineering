@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+NEGATIVE_FIXTURES_PATH = ROOT / "fixtures" / "security-negative-v1.jsonl"
 SPEC = importlib.util.spec_from_file_location("context_eval", ROOT / "scripts" / "context_eval.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
@@ -19,6 +20,11 @@ class ContextEvalTests(unittest.TestCase):
     def setUpClass(cls):
         cls.config = MODULE.load_json(MODULE.CONFIG_PATH)
         cls.fixtures = MODULE.load_fixtures()
+        cls.security_cases = [
+            json.loads(line)
+            for line in NEGATIVE_FIXTURES_PATH.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
 
     def test_fixture_suite_is_complete_and_valid(self):
         self.assertEqual(12, len(self.fixtures))
@@ -29,6 +35,28 @@ class ContextEvalTests(unittest.TestCase):
         case = MODULE.safe_input(self.fixtures[0])
         self.assertNotIn("expected", case)
         self.assertNotIn("family", case)
+        self.assertEqual("context-fixture-author-v1", case["items"][0]["security"]["producer"])
+        self.assertEqual("fixture://CC-001/a", case["items"][0]["source"])
+
+    def test_published_schema_rejects_malformed_nested_values(self):
+        malformed = json.loads(json.dumps(self.fixtures[0]))
+        malformed["signals"]["update_sensitive"] = "false"
+        malformed["items"][0]["unexpected"] = True
+        errors = MODULE.validate(self.config, [malformed])
+        self.assertTrue(any("$.signals.update_sensitive: expected boolean" in error for error in errors))
+        self.assertTrue(any("$.items[0]: unsupported field unexpected" in error for error in errors))
+
+    def test_published_schema_rejects_malformed_ordering_pairs(self):
+        malformed = json.loads(json.dumps(self.fixtures[0]))
+        malformed["expected"]["before"] = [["a"]]
+        errors = MODULE.validate(self.config, [malformed])
+        self.assertTrue(any("$.expected.before[0]: array is shorter than minItems" in error for error in errors))
+
+    def test_schema_validator_rejects_unknown_nested_keywords(self):
+        schema = MODULE.load_json(MODULE.SCHEMA_PATH)
+        schema["properties"]["signals"]["if"] = {"properties": {}}
+        errors = MODULE.validate(self.config, self.fixtures, schema=schema)
+        self.assertIn("$schema.properties.signals: unsupported schema keyword if", errors)
 
     def test_evaluation_is_deterministic(self):
         first = MODULE.evaluate(self.config, self.fixtures)
@@ -37,7 +65,8 @@ class ContextEvalTests(unittest.TestCase):
 
     def test_committed_score_snapshot_matches_evaluator(self):
         actual = MODULE.evaluate(self.config, self.fixtures)["summary"]
-        snapshot = MODULE.load_json(ROOT / "results" / "mechanical-summary-2026-07-29.json")
+        snapshot = MODULE.load_json(ROOT / "results" / "mechanical-summary-2026-07-30.json")
+        self.assertEqual(self.config["version"], snapshot["config_version"])
         for condition, expected in snapshot["conditions"].items():
             comparable = {key: value for key, value in actual[condition].items() if key != "fixtures"}
             self.assertEqual(expected, comparable)
@@ -89,19 +118,43 @@ class ContextEvalTests(unittest.TestCase):
         self.assertEqual([], result["selected"])
 
     def test_candidate_skill_adapter_drops_dependents_of_filtered_evidence(self):
+        security = {"producer": "context-fixture-author-v1", "trust": "trusted", "sensitivity": "public", "content_type": "evidence"}
         payload = {
             "query": "What procedure applies?",
             "max_tokens": 20,
             "allowed_scopes": ["project"],
             "items": [
-                {"id": "parent", "text": "Restricted governing rule.", "scope": "restricted", "status": "current", "authority": "canonical"},
-                {"id": "child", "text": "Project procedure.", "scope": "project", "status": "current", "authority": "primary", "depends_on": ["parent"]},
+                {"id": "parent", "text": "Restricted governing rule.", "source": "fixture://parent", "scope": "restricted", "status": "current", "authority": "canonical", "security": security},
+                {"id": "child", "text": "Project procedure.", "source": "fixture://child", "scope": "project", "status": "current", "authority": "primary", "security": security, "depends_on": ["parent"]},
             ],
         }
         result = SKILL_MODULE.compose(payload)
         self.assertEqual([], result["selected"])
         self.assertIn({"id": "parent", "reason": "disallowed_scope"}, result["excluded"])
         self.assertIn({"id": "child", "reason": "missing_dependency:parent"}, result["excluded"])
+
+    def test_candidate_skill_adapter_fails_closed_on_missing_or_invalid_security_metadata(self):
+        for case in self.security_cases:
+            expected = case["expected"]
+            if expected["outcome"] != "contract_error":
+                continue
+            with self.assertRaisesRegex(SKILL_MODULE.ContractError, expected["error_contains"]):
+                SKILL_MODULE.compose(case["payload"])
+
+    def test_candidate_skill_adapter_excludes_classified_secret_and_instruction_content(self):
+        for case_id in ("SEC-002", "SEC-004"):
+            case = next(item for item in self.security_cases if item["case_id"] == case_id)
+            result = SKILL_MODULE.compose(case["payload"])
+            self.assertEqual([], result["selected"])
+            self.assertIn(case["expected"]["excluded"], result["excluded"])
+
+    def test_candidate_skill_adapter_preserves_source_and_security_provenance(self):
+        fixture = next(item for item in self.fixtures if item["fixture_id"] == "CC-001")
+        payload = MODULE.safe_input(fixture)
+        result = SKILL_MODULE.compose(payload)
+        selected = {item["id"]: item for item in result["selected"]}
+        self.assertEqual("fixture://CC-001/a", selected["a"]["source"])
+        self.assertEqual(payload["items"][0]["security"], selected["a"]["security"])
 
 
 if __name__ == "__main__":

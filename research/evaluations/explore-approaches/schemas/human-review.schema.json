@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-human-review.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "reviewer", "completed_at", "grades_sha256", "human_final", "adjudication_complete", "integrity_valid", "contamination_detected"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "reviewer": {"type": "string", "minLength": 1},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "grades_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "human_final": {"const": true},
+    "adjudication_complete": {"const": true},
+    "integrity_valid": {"type": "boolean"},
+    "contamination_detected": {"type": "boolean"},
+    "notes": {"type": "string"}
+  }
+}

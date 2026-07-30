@@ -12,3 +12,4 @@ coverage/
 *.sqlite
 *.sqlite3
 *.log
+research/evaluations/explore-approaches/results/runs/

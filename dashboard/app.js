@@ -313,7 +313,7 @@
     const composer = data.contextComposer;
     if (!composer) return;
     byId("context-composer-status").textContent = `${humanize(composer.gateResult)} · behavioral unknown`;
-    byId("context-composer-scope").textContent = `${composer.fixtureCount} synthetic fixture families · ${composer.scope}.`;
+    byId("context-composer-scope").textContent = `${composer.fixtureCount} synthetic fixture families · ${composer.negativeSecurityCases} negative security cases · ${composer.scope}.`;
     byId("context-composer-conditions").innerHTML = composer.conditions.map((condition) => `
       <article class="loop-condition${condition.id.startsWith("C") ? " loop-condition--candidate" : ""}">
         <div><code>${escapeHtml(condition.id)}</code><span>${condition.critical_failures} critical · ${condition.stale_failures} stale</span></div>

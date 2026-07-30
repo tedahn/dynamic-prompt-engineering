@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "adjudication.schema.json",
+  "title": "Independent review adjudication",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "review_id", "target", "adjudicator", "submission_hashes", "finding_dispositions", "conflicts", "merge_gate", "rationale", "limitations"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "review_id": {"type": "string", "minLength": 1},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_sha", "head_sha", "diff_sha256"],
+      "properties": {
+        "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "diff_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "adjudicator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adjudicator_id", "surface", "model", "adjudicated_at", "independent_from_authors"],
+      "properties": {
+        "adjudicator_id": {"type": "string", "minLength": 1},
+        "surface": {"type": "string", "minLength": 1},
+        "model": {"type": ["string", "null"]},
+        "adjudicated_at": {"type": "string", "minLength": 1},
+        "independent_from_authors": {"const": true}
+      }
+    },
+    "submission_hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence-methodology", "engineering-reproducibility", "skill-safety-operations"],
+      "properties": {
+        "evidence-methodology": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "engineering-reproducibility": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "skill-safety-operations": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "finding_dispositions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_ids", "disposition", "final_severity", "final_status", "rationale", "evidence_basis"],
+        "properties": {
+          "finding_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
+          "disposition": {"enum": ["upheld", "merged", "revised", "rejected", "unresolved"]},
+          "final_severity": {"enum": ["P0", "P1", "P2", "P3"]},
+          "final_status": {"enum": ["open", "resolved", "accepted_risk", "rejected", "unresolved"]},
+          "rationale": {"type": "string", "minLength": 1},
+          "evidence_basis": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+        }
+      }
+    },
+    "conflicts": {"type": "array", "items": {"type": "string"}},
+    "merge_gate": {"enum": ["eligible_for_human_decision", "changes_required", "blocked"]},
+    "rationale": {"type": "string", "minLength": 1},
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  }
+}

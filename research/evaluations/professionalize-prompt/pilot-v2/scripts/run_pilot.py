@@ -718,6 +718,8 @@ def build_codex_command(
         f'model_reasoning_effort="{REASONING_EFFORT}"',
         "--config",
         "project_doc_max_bytes=0",
+        "--config",
+        'shell_environment_policy.exclude=["CODEX_HOME"]',
         "--strict-config",
         "--sandbox",
         sandbox,
@@ -737,23 +739,66 @@ def build_codex_command(
     return command
 
 
-def isolated_environment(codex_home: Path, temporary_dir: Path | None = None) -> dict[str, str]:
-    effective_home = codex_home
-    if temporary_dir is not None:
-        effective_home = temporary_dir / "codex-home"
-        effective_home.mkdir(parents=True, exist_ok=True)
-        isolated_auth = effective_home / "auth.json"
-        if not isolated_auth.exists():
-            isolated_auth.symlink_to((codex_home / "auth.json").resolve())
+def isolated_environment(
+    codex_home: Path,
+    runtime_root: Path,
+    *,
+    temporary_dir: Path | None = None,
+    tool_readable_roots: Sequence[Path] = (),
+) -> dict[str, str]:
+    try:
+        source_home = codex_home.resolve(strict=True)
+        source_auth = (source_home / "auth.json").resolve(strict=True)
+        resolved_runtime_root = runtime_root.resolve(strict=True)
+        resolved_tool_roots = [root.resolve(strict=True) for root in tool_readable_roots]
+    except (OSError, RuntimeError) as exc:
+        raise PilotError("Authentication boundary contains an unresolvable path") from exc
+    if not source_auth.is_file():
+        raise PilotError("Authentication source must resolve to a regular file")
+
+    effective_home = resolved_runtime_root / "codex-home"
+    tool_temp = (temporary_dir or runtime_root / "tool-tmp").resolve()
+    tool_home = tool_temp / "home"
+
+    protected_paths = (source_home, source_auth, effective_home)
+    for resolved_tool_root in resolved_tool_roots:
+        if any(
+            candidate == resolved_tool_root
+            or candidate.is_relative_to(resolved_tool_root)
+            or resolved_tool_root.is_relative_to(candidate)
+            for candidate in protected_paths
+        ):
+            raise PilotError("Authentication home overlaps a tool-readable root")
+        aliases = [path for path in resolved_tool_root.rglob("*") if path.is_symlink()]
+        for alias in aliases:
+            try:
+                target = alias.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise PilotError("Tool-readable root contains an unresolvable alias") from exc
+            if any(
+                target == protected
+                or target.is_relative_to(protected)
+                or protected.is_relative_to(target)
+                for protected in (source_home, source_auth)
+            ):
+                raise PilotError(
+                    "Tool-readable root contains an alias to authentication material"
+                )
+
+    effective_home.mkdir(parents=True, exist_ok=True)
+    tool_home.mkdir(parents=True, exist_ok=True)
+    isolated_auth = effective_home / "auth.json"
+    if not isolated_auth.exists():
+        isolated_auth.symlink_to((source_home / "auth.json").resolve())
     return {
         "CODEX_HOME": str(effective_home),
-        "HOME": str(effective_home),
+        "HOME": str(tool_home),
         "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "TERM": "dumb",
         "NO_COLOR": "1",
-        "TMPDIR": str(temporary_dir or Path("/tmp")),
+        "TMPDIR": str(tool_temp),
     }
 
 
@@ -790,8 +835,8 @@ def inspect_runtime(cli_path: Path, codex_home: Path) -> dict[str, Any]:
         cli_sha256 = sha256_file(cli_path)
         cli_bytes = cli_path.stat().st_size
         inspection_root = Path(tempfile.mkdtemp(prefix="pilot-v2-runtime-inspect-"))
-        env = isolated_environment(codex_home, inspection_root)
         try:
+            env = isolated_environment(codex_home, inspection_root)
             version = subprocess.run(
                 [str(cli_path), "--version"],
                 check=False,
@@ -836,7 +881,7 @@ def inspect_runtime(cli_path: Path, codex_home: Path) -> dict[str, Any]:
                 missing = sorted(required - feature_names)
                 if missing:
                     errors.append(f"CLI feature registry is missing frozen controls: {missing}")
-        except (OSError, subprocess.SubprocessError) as exc:
+        except (OSError, subprocess.SubprocessError, PilotError) as exc:
             errors.append(f"Runtime readiness check failed: {type(exc).__name__}")
         finally:
             shutil.rmtree(inspection_root, ignore_errors=True)
@@ -1283,17 +1328,28 @@ def execute_cell(
         before = capture_workspace(workspace)
         atomic_write_json(attempt_dir / "workspace-before.json", before.public)
         command = build_codex_command(cli_path, codex_home, row["tool_policy"], workspace)
-        environment = isolated_environment(codex_home, temp_dir)
-        invocation = _invoke_cli(
-            command,
-            prompt,
-            environment,
-            workspace,
-            timeout_seconds,
+        runtime_root = Path(
+            tempfile.mkdtemp(
+                prefix="pilot-v2-cell-runtime-",
+                dir=codex_home.resolve().parent,
+            )
         )
-        runtime_home = Path(environment["CODEX_HOME"])
-        if runtime_home != codex_home:
-            shutil.rmtree(runtime_home, ignore_errors=True)
+        try:
+            environment = isolated_environment(
+                codex_home,
+                runtime_root,
+                temporary_dir=temp_dir,
+                tool_readable_roots=(workspace, temp_dir),
+            )
+            invocation = _invoke_cli(
+                command,
+                prompt,
+                environment,
+                workspace,
+                timeout_seconds,
+            )
+        finally:
+            shutil.rmtree(runtime_root, ignore_errors=True)
         after = capture_workspace(workspace)
         workspace_diff, changed_paths = render_workspace_diff(before, after)
         parsed = parse_cli_events(invocation["stdout"])

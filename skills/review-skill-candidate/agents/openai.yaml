@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Skill Candidate"
+  short_description: "Run governed independent skill reviews"
+  default_prompt: "Use $review-skill-candidate to review this skill or research PR with isolated evidence, engineering, and safety reviewers."

@@ -28,9 +28,13 @@ The working thesis is deliberately narrow: a technique should become a skill onl
 
 - `chatgpt-project/`: validated, copy-ready ChatGPT Project initialization pack.
 - `research/`: current brief, plan, surface registry, technique taxonomy, next action, and live ledgers.
-- `skills/context-composer/`: working repository-local T-005 candidate; validated mechanically but intentionally uninstalled.
+- `skills/context-composer/`: repository-local T-005 v0.2 candidate with fail-closed trust/sensitivity metadata, security exclusions, schema enforcement, and 17 passing tests; intentionally uninstalled.
+- `skills/review-skill-candidate/`: governed T-020 review orchestrator with frozen targets, isolated role packets, schema-bound submissions, independent adjudication, and a named-human decision gate; intentionally uninstalled.
 - `research/evaluations/professionalize-prompt/`: immutable skill snapshot, baseline/ablation workflows, 45 fixtures, rubrics, score ledgers, and deterministic harness.
 - `research/evaluations/codex-stateful-loop/`: event-sourced context loop, six evaluation conditions, state schemas, 12 development episodes, guarded Codex adapter, human promotion/rollback gates, and tests.
+- `research/evaluations/explore-approaches/`: governed advisory candidate plus a provider-neutral, sealed-record lifecycle from held-out evaluation through signed authorization, independently reviewed PR evidence, atomic installation, canary, and rollback.
+- `research/evaluations/skill-review-process/`: baseline/candidate protocol, synthetic fixtures, deterministic bundle tests, and development results for T-020.
+- `research/reviews/PR-001/`: immutable development review packet for the old PR #1 head; targeted remediations are recorded separately and a new exact-head review remains required.
 - `dashboard/`: offline visual observatory plus a reproducible adapter from canonical research records.
 - `templates/`: local records for technique profiles and skill candidates.
 - `AGENTS.md`: durable instructions for agents working in this repository.

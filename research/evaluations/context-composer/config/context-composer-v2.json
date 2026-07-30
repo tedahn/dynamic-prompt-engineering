@@ -1,0 +1,18 @@
+{
+  "version": "context-composer-v2",
+  "token_pattern": "[A-Za-z0-9_]+",
+  "full_context_item_limit": 4,
+  "conditions": ["B0_FULL_DUMP", "B1_RECENCY", "B2_KEYWORD_TOPK", "C1_COMPOSED", "C2_ROUTED"],
+  "authority_weights": {"canonical": 3.0, "primary": 2.0, "secondary": 1.0, "untrusted": 0.0},
+  "freshness_weights": {"current": 2.0, "undated": 0.5, "stale": -3.0, "superseded": -5.0},
+  "safety": {
+    "exclude_injection": true,
+    "exclude_disallowed_scope": true,
+    "exclude_stale": true,
+    "exclude_untrusted": true,
+    "exclude_secret": true,
+    "exclude_instruction": true
+  },
+  "trusted_fixture_producer": "context-fixture-author-v1",
+  "metric_weights": {"required_recall": 0.50, "precision": 0.20, "budget": 0.10, "route": 0.10, "ordering": 0.10}
+}

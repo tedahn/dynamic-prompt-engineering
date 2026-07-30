@@ -1,0 +1,138 @@
+{
+  "schema_version": "1.0",
+  "review_id": "PR-001-8371f0f9634b",
+  "target": {
+    "base_sha": "506850f0d4cf7b21990231b40c560864fd82e9e2",
+    "head_sha": "8371f0f9634bf86e3417bae09772418034239969",
+    "diff_sha256": "24048aec899e9298b8fa5b08893e428e9de03aba518f9a99431f565c9a7943ca"
+  },
+  "reviewer": {
+    "role": "engineering-reproducibility",
+    "reviewer_id": "codex-engineering-20260730",
+    "surface": "Codex desktop subagent",
+    "model": null,
+    "reviewed_at": "2026-07-30T05:47:56.742Z",
+    "independent_context": true
+  },
+  "scope": {
+    "reviewed_files": [
+      "research/evaluations/professionalize-prompt/pilot-v2/scripts/run_pilot.py",
+      "research/evaluations/professionalize-prompt/pilot-v2/tests/test_run_pilot.py",
+      "research/evaluations/professionalize-prompt/pilot-v2/experiments/EXP-PP-V2-PILOT.json",
+      "research/evaluations/context-composer/BUILD_SPEC.md",
+      "research/evaluations/context-composer/PROTOCOL.md",
+      "research/evaluations/context-composer/README.md",
+      "research/evaluations/context-composer/config/context-composer-v1.json",
+      "research/evaluations/context-composer/results/mechanical-summary-2026-07-29.json",
+      "research/evaluations/context-composer/schemas/fixture.schema.json",
+      "research/evaluations/context-composer/scripts/context_eval.py",
+      "research/evaluations/context-composer/tests/test_context_eval.py",
+      "skills/context-composer/references/contract.md",
+      "skills/context-composer/scripts/compose_context.py",
+      "research/evaluations/explore-approaches/scripts/check_candidate.py",
+      "research/evaluations/explore-approaches/tests/test_check_candidate.py",
+      "research/evaluations/explore-approaches/schemas/promotion-approval.schema.json",
+      "research/evaluations/explore-approaches/rubrics/rubric-v1.json"
+    ],
+    "not_reviewed": [
+      "Other reviewer assignments, submissions, and adjudication artifacts",
+      "Uncommitted working-tree content",
+      "Semantic correctness of dashboard UI and generated dashboard data beyond frozen blob-hash integrity",
+      "grade_pilot.py, test_grade_pilot.py, and unchanged pilot infrastructure outside the reviewed runner paths",
+      "Most research prose, ledgers, technique profiles, and skill prompt or metadata files",
+      "Behavioral efficacy, ChatGPT transfer, promotion readiness, installation readiness, and external runtime behavior"
+    ],
+    "concerns_checked": [
+      "Frozen commit existence, exact full-index diff hash, changed-file set, and manifest blob hashes",
+      "Pilot runner environment isolation and workspace boundary",
+      "Deterministic scored-plan freezing and preflight registry consistency",
+      "Retry, resume, artifact hashing, workspace capture, and failure classification",
+      "Context-composer determinism, dependency ordering, safety filtering, schemas, and tests",
+      "Explore-approaches structural checker, promotion schema, rubric, and tests",
+      "Rollback evidence fields represented by the promotion checker and schema"
+    ]
+  },
+  "verdict": "changes_required",
+  "findings": [
+    {
+      "finding_id": "ER-001",
+      "severity": "P1",
+      "status": "open",
+      "title": "Workspace-policy cells place the authentication link inside the agent workspace",
+      "claim": "For workspace-policy attempts, the runner creates CODEX_HOME beneath the fixture workspace, adds auth.json there as a symlink to the source credential file, and invokes Codex with workspace-write access before removing that runtime home. The implementation therefore does not establish that a tool-capable cell cannot discover or read authentication material during execution.",
+      "impact": "A cell may gain access to credential or account metadata, contaminating the evaluation and violating the packet's secret, privacy, and isolation stop rules.",
+      "evidence": [
+        {
+          "path": "research/evaluations/professionalize-prompt/pilot-v2/scripts/run_pilot.py",
+          "line_start": 700,
+          "line_end": 733,
+          "note": "Workspace cells use workspace-write and execute with the fixture workspace as cwd."
+        },
+        {
+          "path": "research/evaluations/professionalize-prompt/pilot-v2/scripts/run_pilot.py",
+          "line_start": 740,
+          "line_end": 756,
+          "note": "The runtime home is created under temporary_dir and auth.json is symlinked into it."
+        },
+        {
+          "path": "research/evaluations/professionalize-prompt/pilot-v2/scripts/run_pilot.py",
+          "line_start": 1277,
+          "line_end": 1296,
+          "note": "For workspace cells temporary_dir is inside the workspace, and the auth-bearing runtime home is removed only after invocation."
+        },
+        {
+          "path": "research/evaluations/professionalize-prompt/pilot-v2/tests/test_run_pilot.py",
+          "line_start": 87,
+          "line_end": 99,
+          "note": "The isolation test confirms the auth symlink exists but does not test denial from inside a workspace-policy cell."
+        }
+      ],
+      "recommendation": "Keep the auth-bearing runtime home outside every fixture workspace and tool-readable root. Add an adversarial integration test whose workspace-policy cell attempts to locate and read CODEX_HOME/auth.json and must fail without exposing its contents.",
+      "counterevidence": "The runtime home is fresh, excludes skills and configuration, and is deleted before post-run capture. The operating-system sandbox may block symlink traversal, but the reviewed code and tests do not establish that guarantee.",
+      "confidence": "high"
+    },
+    {
+      "finding_id": "ER-002",
+      "severity": "P2",
+      "status": "open",
+      "title": "The context fixture schema is published but not enforced",
+      "claim": "The context evaluator's validate function does not load or apply fixture.schema.json and performs only partial manual checks. Malformed nested values or incorrect types can therefore reach selection or grading and crash or distort the supposedly deterministic evaluation instead of producing schema validation errors.",
+      "impact": "Future fixture edits can invalidate reproducibility or create misleading mechanical results while the repository still contains an apparently authoritative schema.",
+      "evidence": [
+        {
+          "path": "research/evaluations/context-composer/BUILD_SPEC.md",
+          "line_start": 31,
+          "line_end": 33,
+          "note": "The build specification requires fixture and schema validation."
+        },
+        {
+          "path": "research/evaluations/context-composer/schemas/fixture.schema.json",
+          "line_start": 5,
+          "line_end": 14,
+          "note": "The schema declares top-level types and required nested fields."
+        },
+        {
+          "path": "research/evaluations/context-composer/scripts/context_eval.py",
+          "line_start": 164,
+          "line_end": 192,
+          "note": "Manual validation does not load the schema or validate most field and nested value types."
+        },
+        {
+          "path": "research/evaluations/context-composer/tests/test_context_eval.py",
+          "line_start": 23,
+          "line_end": 26,
+          "note": "Tests confirm only that the committed fixture set passes the partial validator."
+        }
+      ],
+      "recommendation": "Apply the schema with a pinned validator or implement equivalent explicit nested type checks, then add negative tests for malformed top-level, item, signal, dependency, and expected-value fields.",
+      "counterevidence": "The twelve committed fixtures pass the current validator, repeated evaluation is deterministic, and the committed summary is compared with evaluator output.",
+      "confidence": "high"
+    }
+  ],
+  "limitations": [
+    "The exact commits, full-index diff SHA-256, changed-file set, and all manifest content hashes were recomputed successfully.",
+    "The test suites were not executed because the assignment required that no files be modified; conclusions are based on frozen-source inspection and read-only Git validation.",
+    "Actual Codex sandbox read behavior was not experimentally probed, so ER-001 should be falsified with an adversarial isolation test.",
+    "Bundle-wide validation was not run because it would require reading other reviewer submissions or adjudication artifacts and would violate reviewer isolation."
+  ]
+}

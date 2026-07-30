@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "review_id": "REPLACE",
+  "target": {"base_sha": "REPLACE", "head_sha": "REPLACE", "diff_sha256": "REPLACE"},
+  "adjudicator": {"adjudicator_id": "REPLACE", "surface": "REPLACE", "model": null, "adjudicated_at": "REPLACE", "independent_from_authors": true},
+  "submission_hashes": {"evidence-methodology": "REPLACE", "engineering-reproducibility": "REPLACE", "skill-safety-operations": "REPLACE"},
+  "finding_dispositions": [],
+  "conflicts": [],
+  "merge_gate": "eligible_for_human_decision",
+  "rationale": "REPLACE",
+  "limitations": []
+}

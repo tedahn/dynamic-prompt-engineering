@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-rollback-record.schema.json",
+  "title": "Automatic quarantine and rollback receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "rolled_back_at", "transaction_id", "intent_sha256", "merge_commit", "destination",
+    "restored_previous", "quarantine", "reason", "status", "record_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "rolled_back_at": {"type": "string", "format": "date-time"},
+    "transaction_id": {"pattern": "^[0-9a-f]{32}$"},
+    "intent_sha256": {"pattern": "^[0-9a-f]{64}$"},
+    "merge_commit": {"pattern": "^[0-9a-f]{40,64}$"},
+    "destination": {"type": "string", "minLength": 1},
+    "restored_previous": {"type": "boolean"},
+    "quarantine": {"type": ["string", "null"]},
+    "reason": {"type": "string", "minLength": 1},
+    "status": {"const": "rolled-back"},
+    "record_sha256": {"pattern": "^[0-9a-f]{64}$"}
+  }
+}

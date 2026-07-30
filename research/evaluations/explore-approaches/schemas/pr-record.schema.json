@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Immutable governed pull-request record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "approval_sha256", "candidate_manifest_sha256", "config_sha256",
+    "base_commit", "head_commit", "staged_paths", "pr_url", "opened_at", "status", "record_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "approval_sha256": {"pattern": "^[0-9a-f]{64}$"},
+    "candidate_manifest_sha256": {"pattern": "^[0-9a-f]{64}$"},
+    "config_sha256": {"pattern": "^[0-9a-f]{64}$"},
+    "base_commit": {"pattern": "^[0-9a-f]{40,64}$"},
+    "head_commit": {"pattern": "^[0-9a-f]{40,64}$"},
+    "staged_paths": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "pr_url": {"type": "string", "format": "uri"},
+    "opened_at": {"type": "string", "format": "date-time"},
+    "status": {"const": "pr-open"},
+    "record_sha256": {"pattern": "^[0-9a-f]{64}$"}
+  }
+}

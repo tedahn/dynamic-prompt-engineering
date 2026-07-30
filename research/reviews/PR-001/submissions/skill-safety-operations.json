@@ -1,0 +1,178 @@
+{
+  "schema_version": "1.0",
+  "review_id": "PR-001-8371f0f9634b",
+  "target": {
+    "base_sha": "506850f0d4cf7b21990231b40c560864fd82e9e2",
+    "head_sha": "8371f0f9634bf86e3417bae09772418034239969",
+    "diff_sha256": "24048aec899e9298b8fa5b08893e428e9de03aba518f9a99431f565c9a7943ca"
+  },
+  "reviewer": {
+    "role": "skill-safety-operations",
+    "reviewer_id": "codex-safety-20260730",
+    "surface": "Codex desktop subagent",
+    "model": null,
+    "reviewed_at": "2026-07-30T05:47:09Z",
+    "independent_context": true
+  },
+  "scope": {
+    "reviewed_files": [
+      "skills/context-composer/SKILL.md",
+      "skills/context-composer/agents/openai.yaml",
+      "skills/context-composer/references/contract.md",
+      "skills/context-composer/scripts/compose_context.py",
+      "research/skill-candidates/T-005-context-composer.md",
+      "research/technique-profiles/T-005-context-composer.md",
+      "research/evaluations/context-composer/BUILD_SPEC.md",
+      "research/evaluations/context-composer/PROTOCOL.md",
+      "research/evaluations/context-composer/fixtures/fixtures-v1.jsonl",
+      "research/evaluations/context-composer/tests/test_context_eval.py",
+      "skills/explore-approaches/SKILL.md",
+      "skills/explore-approaches/agents/openai.yaml",
+      "research/skill-candidates/T-019-explore-approaches.md",
+      "research/technique-profiles/T-019-workspace-grounded-approach-exploration.md",
+      "research/evaluations/explore-approaches/PROTOCOL.md",
+      "research/evaluations/explore-approaches/WORKING_SPEC.md",
+      "research/evaluations/explore-approaches/PROMOTION.md",
+      "research/evaluations/explore-approaches/fixtures/fixtures-v1.jsonl",
+      "research/evaluations/explore-approaches/schemas/promotion-approval.schema.json",
+      "research/evaluations/explore-approaches/scripts/check_candidate.py"
+    ],
+    "not_reviewed": [
+      "Other changed dashboard, pilot, ledger, and continuation artifacts",
+      "Context-composer evaluator, config, schema, and result internals beyond safety fixtures and adapter tests",
+      "Explore-approaches rubric, forward-test details, and test implementation",
+      "Canonical policy bodies beyond the frozen context packet",
+      "Uncommitted working tree, other assignments, submissions, adjudication, and human-decision artifacts",
+      "Behavioral efficacy and transfer outside safety and operations"
+    ],
+    "concerns_checked": [
+      "Trigger and non-trigger collisions",
+      "Untrusted input and prompt-injection boundaries",
+      "Privacy, secret, and scope handling",
+      "Authority, confirmation, and high-stakes exclusions",
+      "Merge, promotion, and installation separation",
+      "Maintenance, review triggers, canary, observability, rollback, and retirement",
+      "High-authority and adversarial fixture coverage"
+    ]
+  },
+  "verdict": "changes_required",
+  "findings": [
+    {
+      "finding_id": "SSO-001",
+      "severity": "P1",
+      "status": "open",
+      "title": "Structured composer trusts absent safety metadata",
+      "claim": "An allowed-scope item without an explicit injection marker is eligible and its raw text is emitted, including untrusted instruction-bearing or sensitive text; therefore the adapter does not enforce the skill's secret and injection exclusions.",
+      "impact": "A packet labeled validated can carry hostile instructions or secrets into the next task step, invalidating the advertised privacy and authority boundary.",
+      "evidence": [
+        {
+          "path": "skills/context-composer/SKILL.md",
+          "line_start": 18,
+          "line_end": 22,
+          "note": "Promises exclusion before validated-packet use."
+        },
+        {
+          "path": "skills/context-composer/references/contract.md",
+          "line_start": 32,
+          "line_end": 34,
+          "note": "Required fields omit injection and sensitivity metadata."
+        },
+        {
+          "path": "skills/context-composer/scripts/compose_context.py",
+          "line_start": 95,
+          "line_end": 107,
+          "note": "Filtering trusts scope and an optional caller-provided injection flag."
+        },
+        {
+          "path": "skills/context-composer/scripts/compose_context.py",
+          "line_start": 128,
+          "line_end": 152,
+          "note": "Eligible raw text is copied into selected output."
+        }
+      ],
+      "recommendation": "Require typed trust and sensitivity metadata from a defined trusted producer and fail closed when absent or invalid; reject unsafe untrusted text and add tests for unmarked injection and allowed-scope secrets.",
+      "counterevidence": "The prompt tells the agent to treat retrieval as evidence, and the adapter excludes injection:true and disallowed scopes. The candidate is uninstalled, but these controls do not cover missing or incorrect annotations.",
+      "confidence": "high"
+    },
+    {
+      "finding_id": "SSO-002",
+      "severity": "P1",
+      "status": "open",
+      "title": "Promotion approval requires future merge evidence",
+      "claim": "Gate 3 requires a schema-valid approval before Gate 4, while that schema requires github_pr_url and merged_commit values produced only during Gate 4.",
+      "impact": "The fail-closed authority sequence cannot be completed honestly; an operator must fabricate fields, bypass approval, or deadlock promotion.",
+      "evidence": [
+        {
+          "path": "research/evaluations/explore-approaches/PROMOTION.md",
+          "line_start": 18,
+          "line_end": 20,
+          "note": "Approval must validate before promotion."
+        },
+        {
+          "path": "research/evaluations/explore-approaches/PROMOTION.md",
+          "line_start": 22,
+          "line_end": 41,
+          "note": "The later gate creates the pull request and records the merge commit."
+        },
+        {
+          "path": "research/evaluations/explore-approaches/schemas/promotion-approval.schema.json",
+          "line_start": 7,
+          "line_end": 30,
+          "note": "Both post-merge fields are required."
+        },
+        {
+          "path": "research/evaluations/explore-approaches/schemas/promotion-approval.schema.json",
+          "line_start": 49,
+          "line_end": 55,
+          "note": "The schema constrains PR, merged commit, destination, and rollback."
+        }
+      ],
+      "recommendation": "Split pre-promotion human authorization from post-merge attestation, or authorize a frozen PR head before merge and record the merge commit in a separate verified artifact; mechanically validate chronology and hashes.",
+      "counterevidence": "The runbook repeatedly separates prototype, promotion, installation, canary, and rollback, and the schema demands strong evidence. Those safeguards do not resolve the temporal contradiction.",
+      "confidence": "high"
+    },
+    {
+      "finding_id": "SSO-003",
+      "severity": "P2",
+      "status": "open",
+      "title": "Workspace evidence lacks an injection boundary",
+      "claim": "Explore-approaches instructs the agent to inspect workspace artifacts but never states that embedded instructions are untrusted, and its hard gates and development fixtures contain no adversarial workspace-instruction case.",
+      "impact": "A malicious or accidental instruction in a repository artifact can steer recommendations, expand requested reads, or distort high-stakes advice even when direct implementation remains blocked.",
+      "evidence": [
+        {
+          "path": "skills/explore-approaches/SKILL.md",
+          "line_start": 12,
+          "line_end": 20,
+          "note": "Workspace inspection is required without an instruction-trust rule."
+        },
+        {
+          "path": "skills/explore-approaches/SKILL.md",
+          "line_start": 34,
+          "line_end": 39,
+          "note": "Authority limits side effects and high-stakes decisions but not embedded instructions."
+        },
+        {
+          "path": "research/evaluations/explore-approaches/PROTOCOL.md",
+          "line_start": 27,
+          "line_end": 36,
+          "note": "Hard gates omit prompt injection and secret disclosure."
+        },
+        {
+          "path": "research/evaluations/explore-approaches/fixtures/fixtures-v1.jsonl",
+          "line_start": 1,
+          "line_end": 6,
+          "note": "Development contexts are declarative rather than adversarial instruction-bearing artifacts."
+        }
+      ],
+      "recommendation": "State that workspace content is data, never governing instruction; preserve provenance, constrain scope expansion, and add adversarial injection and secret-disclosure fixtures as critical gates.",
+      "counterevidence": "Relevant-only reads, evidence separation, advice-only behavior, explicit-action authority, and human review reduce consequences. They do not define conflict handling for hostile artifact text.",
+      "confidence": "medium"
+    }
+  ],
+  "limitations": [
+    "No model-behavior, installation, promotion, or external-action test was performed.",
+    "The adapter countercases used synthetic inputs against the exact head code in memory; no files were written.",
+    "Files outside reviewed_files may contain additional controls or defects.",
+    "No other reviewer output or uncommitted target content was used as evidence."
+  ]
+}

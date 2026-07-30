@@ -2,7 +2,7 @@ window.PROMPT_RESEARCH_DATA = {
   "schemaVersion": "1.0",
   "meta": {
     "asOf": "2026-07-28",
-    "generatedAt": "2026-07-30",
+    "generatedAt": "2026-07-28",
     "snapshotId": "professionalize-prompt@2026-07-28-eec246d1",
     "bundleSha256": "eec246d1ed31cee3be7965516c31bf3225246ff462a1be6b0526f6f582dd841c",
     "classification": "Experimental - well-specified frozen design; efficacy unproven",
@@ -372,11 +372,19 @@ window.PROMPT_RESEARCH_DATA = {
     ]
   },
   "contextComposer": {
-    "snapshotId": "CC-MECH-2026-07-29-01",
-    "scope": "deterministic packet-construction evaluation only",
+    "snapshotId": "CC-MECH-2026-07-30-02",
+    "scope": "deterministic hardened packet-construction evaluation only",
     "behavioralEfficacy": null,
     "gateResult": "mechanical-pilot-gate-passed",
     "fixtureCount": 12,
+    "negativeSecurityCases": 4,
+    "gateInterpretation": "C1 passed the narrow safety and B2 recall non-inferiority gate; this is not a superiority result against B0 or evidence of behavioral efficacy.",
+    "claimDispositions": {
+      "claim_1_higher_recall_than_every_baseline": "not-supported: C1 and B0 tied at 1.0 macro required recall",
+      "claim_1_lower_prohibited_and_stale_inclusion": "observed on this synthetic development suite",
+      "claim_2_declared_route_selection": "observed on this synthetic development suite",
+      "claim_3_behavioral_outcome_gain": "not-tested"
+    },
     "families": {
       "lexical_retrieval": 1,
       "paraphrase_metadata": 1,
@@ -425,7 +433,7 @@ window.PROMPT_RESEARCH_DATA = {
       {
         "id": "C1_COMPOSED",
         "required_recall_macro": 1,
-        "precision_macro": 0.4861,
+        "precision_macro": 0.5139,
         "critical_failures": 0,
         "stale_failures": 0,
         "budget_failures": 0,
@@ -435,7 +443,7 @@ window.PROMPT_RESEARCH_DATA = {
       {
         "id": "C2_ROUTED",
         "required_recall_macro": 1,
-        "precision_macro": 0.5694,
+        "precision_macro": 0.5972,
         "critical_failures": 0,
         "stale_failures": 0,
         "budget_failures": 0,
@@ -445,9 +453,10 @@ window.PROMPT_RESEARCH_DATA = {
     ],
     "limitations": [
       "Fixtures are synthetic development cases.",
-      "The candidate uses curated retrieval metadata.",
+      "The trusted fixture producer derives security labels from curated fixture fields; production producer authenticity and classification accuracy remain untested.",
       "No model generated answers, so grounded outcome quality, latency, tokens, cost, and transfer remain unknown.",
-      "Dependency ordering is mechanically validated; behavioral ordering effects remain untested."
+      "Dependency ordering is mechanically validated; behavioral ordering effects remain untested.",
+      "The B0/C1 required-recall result is a tie, so the original all-baseline recall-superiority claim is unsupported."
     ]
   },
   "dynamicTechniques": [
@@ -642,7 +651,7 @@ window.PROMPT_RESEARCH_DATA = {
       "id": "T-005",
       "family": "Relevance selection, ordering, retrieval, compaction, and token budgeting",
       "skillForm": "context-composer",
-      "state": "Working repository candidate; mechanical pilot passed; behavioral efficacy Unknown",
+      "state": "v0.2 repository candidate; security/schema remediation and mechanical pilot passed; behavioral efficacy Unknown",
       "falsifier": "A simple uncurated context baseline matches it across fresh held-out behavioral tasks"
     },
     {
@@ -740,62 +749,74 @@ window.PROMPT_RESEARCH_DATA = {
       "id": "T-019",
       "family": "Workspace-grounded approach exploration and falsifiable next-step selection",
       "skillForm": "explore-approaches",
-      "state": "Prototype; behavioral efficacy Unknown",
+      "state": "Mechanically validated advisory and sealed-record lifecycle prototype; behavioral efficacy Unknown",
       "falsifier": "A minimal advisory prompt or composed professionalize-prompt mode matches quality with lower overhead"
+    },
+    {
+      "id": "T-020",
+      "family": "Role-separated evidence-grounded skill and research review",
+      "skillForm": "review-skill-candidate",
+      "state": "Repository prototype; mechanical tests passed; behavioral value Unknown",
+      "falsifier": "One general reviewer plus deterministic checks matches critical recall and auditability with lower overhead"
     }
   ],
   "ledgers": {
     "claims": {
-      "count": 45,
+      "count": 53,
       "status": {
-        "Grounded fact": 29,
+        "Grounded fact": 31,
         "Looks believable": 3,
         "Corroborated": 10,
         "Forecast/opinion": 2,
-        "Experimental": 1
+        "Experimental": 7
       },
       "confidence": {
-        "high": 26,
+        "high": 34,
         "medium": 17,
         "low": 2
       }
     },
     "sources": {
-      "count": 59,
+      "count": 64,
       "type": {
         "official documentation": 8,
         "official help": 2,
         "official engineering article": 4,
-        "direct artifact": 3,
+        "direct artifact": 6,
         "research paper": 36,
-        "direct observation": 2,
+        "direct observation": 4,
         "research preprint": 2,
         "vendor technical report": 1,
         "direct technical report": 1
       }
     },
     "evalCases": {
-      "count": 19,
+      "count": 26,
       "status": {
         "blocked": 1,
         "designed": 13,
         "deferred": 1,
-        "mechanically-validated": 3,
-        "development-diagnostic": 1
+        "mechanically-validated": 5,
+        "development-diagnostic": 2,
+        "remediation-validated": 4
       }
     },
     "assumptions": {
-      "count": 10,
+      "count": 12,
       "status": {
-        "open": 10
+        "open": 12
       }
     },
     "changes": {
-      "count": 6,
+      "count": 10,
       "status": {
         "validated": 1,
         "validated-design": 4,
-        "mechanically-validated-prototype": 1
+        "mechanically-validated-prototype": 1,
+        "mechanically-validated-automation": 1,
+        "development-reviewed-prototype": 1,
+        "remediation-validated-pending-head-review": 1,
+        "mechanically-validated-pending-head-review": 1
       }
     }
   },
@@ -810,7 +831,7 @@ window.PROMPT_RESEARCH_DATA = {
       "id": "02",
       "name": "Source",
       "state": "done",
-      "note": "59 sources registered"
+      "note": "64 sources registered"
     },
     {
       "id": "03",

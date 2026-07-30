@@ -1,0 +1,63 @@
+name: Validate prompt research candidates
+
+on:
+  pull_request:
+    paths:
+      - "skills/**"
+      - "research/**"
+      - "dashboard/**"
+      - "README.md"
+      - ".github/workflows/explore-approaches-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Validate candidate contract
+        run: python research/evaluations/explore-approaches/scripts/check_candidate.py
+      - name: Validate skill packages
+        run: >-
+          python research/evaluations/skill-review-process/scripts/validate_skill_packages.py
+          skills/context-composer
+          skills/explore-approaches
+          skills/review-skill-candidate
+      - name: Run research unit suites
+        run: |
+          for suite in \
+            research/evaluations/codex-stateful-loop/tests \
+            research/evaluations/context-composer/tests \
+            research/evaluations/explore-approaches/tests \
+            research/evaluations/professionalize-prompt/pilot-v2/tests \
+            research/evaluations/professionalize-prompt/tests \
+            research/evaluations/skill-review-process/tests
+          do
+            python -m unittest discover -s "$suite" -p "test_*.py" -v
+          done
+      - name: Run model-free lifecycle dry run
+        run: |
+          git config --global user.name "Explore Approaches CI"
+          git config --global user.email "explore-approaches-ci@invalid.example"
+          python research/evaluations/explore-approaches/scripts/model_free_e2e.py --output /tmp/explore-approaches-e2e.json
+      - name: Validate frozen review packet
+        run: |
+          python skills/review-skill-candidate/scripts/review_bundle.py validate \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --bundle "$GITHUB_WORKSPACE/research/reviews/PR-001"
+      - name: Validate dashboard adapter and views
+        run: |
+          node dashboard/scripts/build-data.mjs --check
+          node --test dashboard/tests/dashboard.test.mjs
+      - name: Compile Python sources
+        run: python -m compileall -q research/evaluations skills

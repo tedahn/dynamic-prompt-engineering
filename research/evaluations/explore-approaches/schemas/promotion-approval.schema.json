@@ -1,58 +1,98 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "explore-approaches-promotion-approval.schema.json",
-  "title": "Explore Approaches named-human promotion approval",
+  "title": "Signed Explore Approaches promotion authorization",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
     "approval_id",
     "decision",
-    "human_approved",
     "approved_by",
     "approved_at",
     "expires_at",
-    "candidate_name",
-    "candidate_version",
-    "candidate_commit",
     "evaluation_completed_at",
-    "evaluation_summary_path",
-    "evaluation_summary_sha256",
-    "holdout_manifest_sha256",
+    "candidate",
+    "evidence",
+    "target",
+    "permissions",
     "thresholds_met",
     "accepted_exceptions",
-    "github_repository",
-    "github_target_branch",
-    "github_pr_url",
-    "merged_commit",
-    "root_skills_path",
-    "canary_plan_path",
-    "rollback_tested"
+    "signature"
   ],
   "properties": {
-    "schema_version": {"const": "1.0"},
-    "approval_id": {"type": "string", "minLength": 1},
+    "schema_version": {"const": "2.0"},
+    "approval_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
     "decision": {"const": "promote"},
-    "human_approved": {"const": true},
-    "approved_by": {"type": "string", "minLength": 1},
+    "approved_by": {"type": "string", "minLength": 1, "maxLength": 256},
     "approved_at": {"type": "string", "format": "date-time"},
     "expires_at": {"type": "string", "format": "date-time"},
-    "candidate_name": {"const": "explore-approaches"},
-    "candidate_version": {"type": "string", "pattern": "^explore-approaches-v[0-9]+\\.[0-9]+\\.[0-9]+$"},
-    "candidate_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
     "evaluation_completed_at": {"type": "string", "format": "date-time"},
-    "evaluation_summary_path": {"type": "string", "minLength": 1},
-    "evaluation_summary_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "holdout_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "manifest_sha256", "base_commit"],
+      "properties": {
+        "name": {"const": "explore-approaches"},
+        "version": {"pattern": "^explore-approaches-v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "manifest_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "base_commit": {"pattern": "^[0-9a-f]{40,64}$"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evaluation_summary_sha256",
+        "holdout_manifest_sha256",
+        "protocol_sha256",
+        "rubric_sha256",
+        "rollback_evidence_sha256",
+        "config_sha256"
+      ],
+      "properties": {
+        "evaluation_summary_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "holdout_manifest_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "protocol_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "rubric_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "rollback_evidence_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "config_sha256": {"pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository_url", "repository_slug", "base_branch", "feature_branch", "root_skills_path"],
+      "properties": {
+        "repository_url": {"const": "https://github.com/tedahn/dynamic-prompt-engineering.git"},
+        "repository_slug": {"const": "tedahn/dynamic-prompt-engineering"},
+        "base_branch": {"const": "main"},
+        "feature_branch": {"pattern": "^codex/[a-z0-9][a-z0-9._/-]*$"},
+        "root_skills_path": {"const": "~/.codex/skills/explore-approaches"}
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "enum": ["push_branch", "create_pr", "merge_reviewed_pr", "install_root_skill", "run_canary", "rollback"]
+      }
+    },
     "thresholds_met": {"const": true},
-    "accepted_exceptions": {"type": "array", "items": {"type": "string"}},
-    "github_repository": {"const": "https://github.com/tedahn/dynamic-prompt-engineering-in-execution.git"},
-    "github_target_branch": {"const": "main"},
-    "github_pr_url": {"type": "string", "format": "uri"},
-    "merged_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
-    "root_skills_path": {"const": "~/.codex/skills/explore-approaches"},
-    "canary_plan_path": {"type": "string", "minLength": 1},
-    "rollback_tested": {"const": true},
+    "accepted_exceptions": {"type": "array", "maxItems": 0},
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "identity", "namespace", "value"],
+      "properties": {
+        "algorithm": {"const": "ssh-keygen-y"},
+        "identity": {"type": "string", "minLength": 1},
+        "namespace": {"const": "codex-skill-promotion"},
+        "value": {"type": "string", "minLength": 32}
+      }
+    },
     "notes": {"type": "string"}
   }
 }

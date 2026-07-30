@@ -29,7 +29,7 @@ The candidate combines workspace inspection, option diversity, baseline inclusio
 - **Protocol:** `research/evaluations/explore-approaches/PROTOCOL.md`
 - **Development fixtures:** `research/evaluations/explore-approaches/fixtures/fixtures-v1.jsonl`
 - **Static validation:** Contract checker plus skill-creator `quick_validate.py`.
-- **Current result:** Skill-creator validation, deterministic contract checks, and three unit tests pass. Four independent development requests found one technical calibration/test-isolation defect; revision R1 corrected the contract and one fresh technical request passed the diagnosed gates. These results are diagnostic and cannot authorize promotion.
+- **Current result:** Skill-creator validation, deterministic contract checks, and three candidate unit tests pass. Forty-four model-free lifecycle and adversarial tests also pass, covering signed custody, exact runtime and raw-artifact binding, deterministic classification, recovery receipts, reviewed-merge evidence, helper-staged atomic installation, canary, and rollback. Four independent development requests found one technical calibration/test-isolation defect; revision R1 corrected the contract and one fresh technical request passed the diagnosed gates. These results are diagnostic and cannot authorize promotion.
 - **Forward-test record:** `research/evaluations/explore-approaches/results/forward-test-2026-07-29.md`.
 - **Open gate:** Fresh held-out evaluation, resource measurements, independent human review, and explicit post-evaluation promotion approval.
 
@@ -42,3 +42,7 @@ The candidate combines workspace inspection, option diversity, baseline inclusio
 - **Canary:** Explicit invocation on low-authority, non-sensitive advisory tasks.
 - **Rollback:** Quarantine the installed copy and restore the timestamped prior version; retain raw and minimal-prompt baselines.
 - **Promotion runbook:** `research/evaluations/explore-approaches/PROMOTION.md`.
+- **Automation runbook:** `research/evaluations/explore-approaches/AUTOMATION_RUNBOOK.md`.
+- **Automation:** `research/evaluations/explore-approaches/scripts/automate_lifecycle.py` implements the resumable fail-closed path from signed arm/runtime freeze and hash-verified evaluation artifacts through signed approval, exact-diff clean-clone pull request, canonical reviewed-merge recovery, full-manifest verification, exact-ref system-installer staging, atomic activation, canary, and rollback.
+- **Human boundary:** Models may prepare evidence and unsigned signature material but cannot author or sign holdout custody, create the human-final decision, sign promotion authority, or supply independent GitHub approval.
+- **Current readiness:** Model-free lifecycle and adversarial tests pass. Live adapters, signer configuration, a fresh private holdout, human-final adjudication, and post-result approval remain unavailable; the candidate is not promotable or installed.

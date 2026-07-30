@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0",
+  "as_of": "2026-07-30",
+  "candidate": "review-skill-candidate-v0.1.0",
+  "surface": "Codex desktop repository-local mechanics",
+  "skill_validation": "passed",
+  "unit_tests": {
+    "passed": 8,
+    "failed": 0,
+    "coverage": [
+      "immutable target and role packet creation",
+      "preserved-bundle overwrite refusal",
+      "missing-role fail-closed behavior",
+      "provisional clean review",
+      "open P1 changes-required gate",
+      "duplicate reviewer identity detection",
+      "stale submission hash detection",
+      "packet drift detection"
+    ]
+  },
+  "pr_001_packet": {
+    "review_id": "PR-001-8371f0f9634b",
+    "base_sha": "506850f0d4cf7b21990231b40c560864fd82e9e2",
+    "head_sha": "8371f0f9634bf86e3417bae09772418034239969",
+    "diff_sha256": "24048aec899e9298b8fa5b08893e428e9de03aba518f9a99431f565c9a7943ca",
+    "packet_initialization": "passed",
+    "pre_submission_validation": "blocked_as_expected",
+    "independent_reviews": "completed_three_isolated_roles",
+    "adjudication": "completed_changes_required",
+    "adjudicated_findings": {
+      "total": 7,
+      "P0": 0,
+      "P1": 3,
+      "P2": 4,
+      "P3": 0
+    },
+    "validation": "passed_with_open_blockers",
+    "human_decision": "pending"
+  },
+  "remediation_record": {
+    "path": "research/evaluations/skill-review-process/results/remediation-summary-2026-07-30.json",
+    "targeted_findings_closed": 7,
+    "fresh_exact_head_review_required": true
+  },
+  "behavioral_efficacy": null,
+  "chatgpt_transfer": null,
+  "promotion_ready": false,
+  "installation_ready": false,
+  "limitations": [
+    "Unit tests and one development target cannot establish reviewer effectiveness.",
+    "PR #1 has no blinded defect ground truth, so seven upheld findings do not estimate reviewer recall or precision.",
+    "No B0 or B1 matched-budget behavioral comparison has run.",
+    "No ChatGPT reviewer cycle has run.",
+    "The first adjudicator exceeded the bounded completion window; a fresh replacement completed the artifact, adding coordination overhead that formal trials must measure."
+  ]
+}
