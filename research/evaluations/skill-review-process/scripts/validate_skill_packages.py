@@ -12,7 +12,7 @@ from pathlib import Path
 NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 AGENT_FIELD_PATTERN = re.compile(r"^  ([a-z_]+):\s*(.+)$")
 REQUIRED_AGENT_FIELDS = {"display_name", "short_description", "default_prompt"}
-SAFE_PLAIN_SCALAR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .,_;()/'$+\-]*$")
+SAFE_PLAIN_SCALAR = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 .,_;()/\'"$+\-]*$')
 
 
 class PackageError(ValueError):

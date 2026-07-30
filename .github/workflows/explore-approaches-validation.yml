@@ -32,6 +32,7 @@ jobs:
           python research/evaluations/skill-review-process/scripts/validate_skill_packages.py
           skills/context-composer
           skills/explore-approaches
+          skills/professionalize-prompt
           skills/review-skill-candidate
       - name: Run research unit suites
         run: |

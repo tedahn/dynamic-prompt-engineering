@@ -643,8 +643,8 @@ window.PROMPT_RESEARCH_DATA = {
     {
       "id": "T-004",
       "family": "Model/product control calibration",
-      "skillForm": "surface-calibrator",
-      "state": "Sourced; volatile",
+      "skillForm": "internal professionalize-prompt model-profile gate",
+      "state": "Prototype challenger; behavior unscored",
       "falsifier": "Prompt-level adaptation adds no value beyond settings or cannot stay current"
     },
     {
@@ -762,24 +762,24 @@ window.PROMPT_RESEARCH_DATA = {
   ],
   "ledgers": {
     "claims": {
-      "count": 53,
+      "count": 55,
       "status": {
-        "Grounded fact": 31,
-        "Looks believable": 3,
+        "Grounded fact": 32,
+        "Looks believable": 4,
         "Corroborated": 10,
         "Forecast/opinion": 2,
         "Experimental": 7
       },
       "confidence": {
-        "high": 34,
-        "medium": 17,
+        "high": 35,
+        "medium": 18,
         "low": 2
       }
     },
     "sources": {
-      "count": 64,
+      "count": 67,
       "type": {
-        "official documentation": 8,
+        "official documentation": 11,
         "official help": 2,
         "official engineering article": 4,
         "direct artifact": 6,
@@ -791,10 +791,10 @@ window.PROMPT_RESEARCH_DATA = {
       }
     },
     "evalCases": {
-      "count": 26,
+      "count": 27,
       "status": {
         "blocked": 1,
-        "designed": 13,
+        "designed": 14,
         "deferred": 1,
         "mechanically-validated": 5,
         "development-diagnostic": 2,
@@ -802,13 +802,13 @@ window.PROMPT_RESEARCH_DATA = {
       }
     },
     "assumptions": {
-      "count": 12,
+      "count": 13,
       "status": {
-        "open": 12
+        "open": 13
       }
     },
     "changes": {
-      "count": 10,
+      "count": 11,
       "status": {
         "validated": 1,
         "validated-design": 4,
@@ -816,7 +816,8 @@ window.PROMPT_RESEARCH_DATA = {
         "mechanically-validated-automation": 1,
         "development-reviewed-prototype": 1,
         "remediation-validated-pending-head-review": 1,
-        "mechanically-validated-pending-head-review": 1
+        "mechanically-validated-pending-head-review": 1,
+        "prototype": 1
       }
     }
   },
@@ -831,7 +832,7 @@ window.PROMPT_RESEARCH_DATA = {
       "id": "02",
       "name": "Source",
       "state": "done",
-      "note": "64 sources registered"
+      "note": "67 sources registered"
     },
     {
       "id": "03",

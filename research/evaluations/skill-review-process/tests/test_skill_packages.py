@@ -33,7 +33,7 @@ class SkillPackageValidatorTest(unittest.TestCase):
         return package
 
     def test_repository_candidates_are_loadable_packages(self) -> None:
-        for name in ("context-composer", "explore-approaches", "review-skill-candidate"):
+        for name in ("context-composer", "explore-approaches", "professionalize-prompt", "review-skill-candidate"):
             with self.subTest(name=name):
                 self.assertEqual(VALIDATOR.validate_package(REPO_ROOT / "skills" / name)["name"], name)
 
