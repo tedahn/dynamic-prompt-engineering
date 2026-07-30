@@ -1,7 +1,7 @@
 # Next action 001 — establish the reference-skill baseline
 
-- **Status:** evaluation design and immutable snapshot complete; behavioral run blocked pending named owner and budget approval
-- **Owner:** Project owner (identity unresolved)
+- **Status:** repaired pilot frozen and replacement plan ready; three replacement preflight cells require named-human budget approval
+- **Owner:** Ted Ahn (current workspace owner)
 - **Proposed deadline:** 2026-08-04
 - **Decision unlocked:** whether `professionalize-prompt` is a suitable reference architecture and which of its components deserve separate technique research
 
@@ -37,6 +37,8 @@ Check for prompt bloat, grading bias toward verbosity, evaluation leakage, unsup
 - Model runs: proposed ceiling of 48, subject to owner approval and current cost controls.
 - Stop early if a condition causes a critical safety/authority regression, the target surface changes, graders cannot distinguish the intended behavior, or remaining runs cannot change the decision.
 
-## Approval needed
+## Approval state
 
-Assign a named owner, confirm the target model/product surface, approve the fixture data boundary and run budget, and name the adoption approver. Do not run this action while those fields are unresolved.
+Ted Ahn is the named pilot owner and approver. The synthetic-data boundary, isolated execution policy, bundled Codex CLI target, and 48-cell execution ceiling are approved in `EXP-PP-V2-PILOT`. This development pilot cannot authorize adoption; a separate fresh held-out study and adoption approver remain required after pilot review.
+
+The first three discarded preflight cells completed but exposed shared-runtime-home contamination before any scored cell ran. The repaired runner and replacement plan validate locally. `pilot-v2/approvals/REPLACEMENT-PREFLIGHT-001.md` requests authority for exactly three additional discarded cells; do not resume provider execution until that approval is recorded.

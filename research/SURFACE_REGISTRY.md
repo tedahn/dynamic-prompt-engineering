@@ -20,7 +20,7 @@ Volatile model and product facts belong here, not in stable workspace instructio
 - **Target model:** Unknown
 - **Project memory mode availability:** Unknown; verify in the actual account before setup
 - **Enabled tools/connectors:** Unknown
-- **Owner:** Project owner (identity unresolved)
+- **Owner:** Ted Ahn (current workspace owner)
 - **Collaborators:** Unknown
 - **Refresh trigger:** before Project creation, settings changes, uploads, membership changes, connector use, or any model-current claim
 

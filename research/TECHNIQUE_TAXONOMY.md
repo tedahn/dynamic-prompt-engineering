@@ -12,7 +12,7 @@
 | T-002 | Redundancy, contradiction, and obsolete-instruction detection | `prompt-linter` / `lean-prompt-pruner` | Vendor anti-pattern guidance and local ecosystem gap | Specified; needs precision eval | Linter overcorrects valid constraints or fails to beat manual review |
 | T-003 | Surface-specific example selection | `exemplar-curator` | OpenAI, Anthropic, Google guidance; KATE and Auto-CoT | Sourced; transfer-sensitive | Modern zero-shot baselines match examples or leakage/overfit erases gains |
 | T-004 | Model/product control calibration | `surface-calibrator` | Current first-party surface guidance | Sourced; volatile | Prompt-level adaptation adds no value beyond settings or cannot stay current |
-| T-005 | Relevance selection, ordering, retrieval, compaction, and token budgeting | `context-composer` | Anthropic context guidance; RAG; Lost in the Middle | Sourced; priority candidate | A simple uncurated context baseline matches it across held-out tasks |
+| T-005 | Relevance selection, ordering, retrieval, compaction, and token budgeting | `context-composer` | Anthropic context guidance; RAG; Lost in the Middle; LongMemEval; Context Rot | Working repository candidate; mechanical pilot passed; behavioral efficacy Unknown | A simple uncurated context baseline matches it across fresh held-out behavioral tasks |
 | T-006 | Output schema plus semantic validation and repair | `output-contract-engineer` | Gemini structured-output guidance and local gap | Sourced; priority candidate | Schema validity fails to improve semantic success or repair adds regressions |
 | T-007 | Tool descriptions, schemas, response shaping, and errors | `tool-contract-engineer` | Anthropic tool guidance plus Gemini functions | Sourced; priority candidate | Tool linting does not improve task success or increases tool-selection errors |
 | T-008 | Safe/reversible autonomy and confirmation gates | `authority-boundary` | Current agent-prompt guidance and local governance | Specified; safety-critical | Added policy either fails to prevent unsafe actions or blocks ordinary in-scope work |
@@ -26,6 +26,7 @@
 | T-016 | Planner/generator/evaluator long-run harness | `long-run-harness` | Anthropic harness report and local artifact pipelines | Sourced for specific surfaces; not universal | Stronger model-native execution makes the harness pure overhead |
 | T-017 | Multi-agent specialization, debate, and handoffs | `dynamic-skill-router` / multi-agent router | AutoGen infrastructure; mixed multi-agent debate evidence | Experimental; low priority | Matched-token single-agent baseline wins or correlated errors persist |
 | T-018 | Execution-grounded, retrievable skill libraries | `skill-library-operator` | Voyager in Minecraft plus local skill ecosystem | Experimental; environment-specific | Skills do not replay reliably, collide in identity, or fail transfer/safety tests |
+| T-019 | Workspace-grounded approach exploration and falsifiable next-step selection | `explore-approaches` | User-supplied advisory-mode artifact plus current local skill contract | Prototype; behavioral efficacy Unknown | A minimal advisory prompt or composed `professionalize-prompt` mode matches quality with lower overhead |
 
 ## Recommended research queue
 

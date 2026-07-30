@@ -16,12 +16,16 @@ Make it easy to see, in one place, which prompting techniques are being studied,
 - `research/evaluations/professionalize-prompt/scores/static-design-audit-2026-07-28.json`
 - `research/evaluations/professionalize-prompt/scores/score-ledger.csv`
 - `research/evaluations/professionalize-prompt/pilot-v2/experiments/EXP-PP-V2-PILOT.json`
+- `research/evaluations/professionalize-prompt/pilot-v2/results/PREFLIGHT-INFRA-2026-07-29.json`
+- `research/evaluations/context-composer/fixtures/fixtures-v1.jsonl`
+- `research/evaluations/context-composer/results/mechanical-summary-2026-07-29.json`
+- `skills/context-composer/SKILL.md`
 
 ## Requirements
 
 1. Use a calm, editorial research-instrument aesthetic rather than a generic SaaS card grid.
 2. Provide four linked views: overview, workflows, evaluations, and technique map.
-3. Visualize the candidate lifecycle, baseline/candidate/ceiling workflows, ablations, fixture coverage, pilot plan, score state, and evidence ledgers.
+3. Visualize the candidate lifecycle, baseline/candidate/ceiling workflows, ablations, fixture coverage, pilot plan, T-005 mechanical packet scores, score state, and evidence ledgers.
 4. Separate documented guidance, static design assessment, provisional observations, and unknown behavioral efficacy. Never render an absent score as zero.
 5. Preserve the frozen skill snapshot ID and identify the adoption baseline.
 6. Make workflow and technique details inspectable with keyboard-accessible controls.

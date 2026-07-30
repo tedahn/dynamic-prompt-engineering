@@ -2,7 +2,7 @@
 
 - **Status:** initialized
 - **As of:** 2026-07-28
-- **Decision owner:** Project owner (identity unresolved)
+- **Decision owner:** Ted Ahn (current workspace owner)
 - **Proposed first review:** 2026-08-04
 
 ## Decision to support

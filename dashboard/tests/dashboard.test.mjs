@@ -27,9 +27,16 @@ test("dashboard renders missing behavioral evidence as unknown", () => {
   assert.match(app, /score-track--unknown/);
 });
 
+test("dashboard preserves the discarded preflight infrastructure boundary", () => {
+  assert.equal(data.pilot.frozenArtifacts, "frozen");
+  assert.equal(data.pilot.preflightInfrastructure.completedCells, 3);
+  assert.equal(data.pilot.preflightInfrastructure.scoredCells, 0);
+  assert.match(data.pilot.preflightInfrastructure.replacementApproval, /pending/i);
+});
+
 test("dashboard covers current research registries", () => {
   assert.equal(data.dynamicTechniques.length, 19);
-  assert.equal(data.skillCandidates.length, 18);
+  assert.equal(data.skillCandidates.length, 19);
   assert.equal(data.workflows.length, 6);
   assert.equal(data.ablations.length, 7);
   assert.equal(data.fixtures.count, 45);
@@ -56,6 +63,16 @@ test("stateful loop visualizes a frozen baseline, gated candidate, and human gat
   assert.match(html, /State evolves\. Authority does not\./);
   assert.match(app, /function renderStatefulLoop/);
   assert.match(css, /\.loop-condition--candidate/);
+});
+
+test("context composer visualizes mechanical scores without claiming behavioral efficacy", () => {
+  assert.equal(data.contextComposer.fixtureCount, 12);
+  assert.equal(data.contextComposer.behavioralEfficacy, null);
+  assert.equal(data.contextComposer.conditions.length, 5);
+  assert.equal(data.contextComposer.conditions.find((item) => item.id === "C1_COMPOSED").critical_failures, 0);
+  assert.match(html, /Safer packets, behavioral outcome unknown/);
+  assert.match(html, /skills\/context-composer\/SKILL\.md/);
+  assert.match(app, /function renderContextComposer/);
 });
 
 test("dashboard provides semantic views and accessibility affordances", () => {

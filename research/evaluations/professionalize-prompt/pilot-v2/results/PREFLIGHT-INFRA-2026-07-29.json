@@ -1,0 +1,33 @@
+{
+  "schema_version": "pilot-v2-infrastructure-observation-v1",
+  "run_id": "EXP-PP-V2-PILOT-20260729",
+  "as_of": "2026-07-29",
+  "evidence_state": "discarded-preflight-infrastructure-only",
+  "preflight": {
+    "expected_cells": 3,
+    "completed_cells": 3,
+    "failed_cells": 0,
+    "discarded": true
+  },
+  "scored": {
+    "expected_cells": 45,
+    "completed_cells": 0,
+    "failed_cells": 0,
+    "status": "not_run"
+  },
+  "run_manifest_sha256": "ad9019e18ac9d47d288441c990df1024dcf9b551d20ef6df3faa37799f8a48dd",
+  "cell_metadata": [
+    {"cell_id": "PREFLIGHT-001", "status": "completed", "metadata_sha256": "a49c3307943784e78bee1e84a6737bd3af7dfbe15ffba7a5f75dd1d5dbc9a666"},
+    {"cell_id": "PREFLIGHT-002", "status": "completed", "metadata_sha256": "c088d604e652552b99fc3fa6f199d45512d9b1f622d61eaff6f85f24c0c0ad3a"},
+    {"cell_id": "PREFLIGHT-003", "status": "completed", "metadata_sha256": "8fcf8ea245d9c392c81bd09e9c1b317de4f83be45f759ffcb481f8077196890c"}
+  ],
+  "observation": "The bundled CLI populated config.toml and system skills into the shared temporary CODEX_HOME. The scored phase failed closed before executing a scored cell.",
+  "repair": "The frozen runner now creates and removes a fresh per-cell runtime home containing only an authentication link. The preflight registry validator now verifies the generated workflow-fixture pairs and tool policies.",
+  "replacement": {
+    "plan_status": "validated-ready",
+    "preflight_status": "not_run",
+    "approval": "REPLACEMENT-PREFLIGHT-001 pending",
+    "additional_requested_cells": 3
+  },
+  "claims_not_supported": ["skill quality", "behavioral efficacy", "safety clearance", "adoption"]
+}

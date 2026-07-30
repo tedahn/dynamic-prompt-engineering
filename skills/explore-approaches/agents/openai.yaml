@@ -1,0 +1,4 @@
+interface:
+  display_name: "Explore Approaches"
+  short_description: "Compare grounded options before taking action"
+  default_prompt: "Use $explore-approaches to compare practical approaches for this goal without implementing one."

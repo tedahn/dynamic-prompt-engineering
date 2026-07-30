@@ -1,0 +1,4 @@
+interface:
+  display_name: "Context Composer"
+  short_description: "Select and order the safest task-relevant context"
+  default_prompt: "Use $context-composer to assemble the smallest safe, evidence-backed context packet for this task."

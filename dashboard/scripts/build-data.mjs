@@ -120,11 +120,14 @@ function buildData() {
   const workflowRegistry = readJson("research/evaluations/professionalize-prompt/workflows/workflows-v1.json");
   const staticAudit = readJson("research/evaluations/professionalize-prompt/scores/static-design-audit-2026-07-28.json");
   const pilotSource = readJson("research/evaluations/professionalize-prompt/pilot-v2/experiments/EXP-PP-V2-PILOT.json");
+  const pilotInfrastructure = readJson("research/evaluations/professionalize-prompt/pilot-v2/results/PREFLIGHT-INFRA-2026-07-29.json");
   const statefulLoopConfig = readJson("research/evaluations/codex-stateful-loop/config/loop-v1.json");
   const statefulLoopArchitecture = read("research/evaluations/codex-stateful-loop/ARCHITECTURE.md");
   const statefulLoopEpisodes = parseJsonLines(read("research/evaluations/codex-stateful-loop/fixtures/episodes-dev-v1.jsonl"));
   const statefulLoopSeed = readJson("research/evaluations/codex-stateful-loop/state/seed-state-v1.json");
   const statefulLoopHoldout = readJson("research/evaluations/codex-stateful-loop/fixtures/holdout-manifest-v1.json");
+  const contextComposerFixtures = parseJsonLines(read("research/evaluations/context-composer/fixtures/fixtures-v1.jsonl"));
+  const contextComposerSnapshot = readJson("research/evaluations/context-composer/results/mechanical-summary-2026-07-29.json");
   const fixtures = parseJsonLines(read("research/evaluations/professionalize-prompt/fixtures/fixtures-v1.jsonl"));
   const fixtureById = Object.fromEntries(fixtures.map((fixture) => [fixture.fixture_id, fixture]));
   const scoreRows = parseCsv(read("research/evaluations/professionalize-prompt/scores/score-ledger.csv"))
@@ -229,7 +232,7 @@ function buildData() {
     pilot: {
       experimentId: pilotSource.experiment_id,
       status: pilotSource.status,
-      frozenArtifacts: pilotSource.frozen_artifacts.status,
+      frozenArtifacts: Array.isArray(pilotSource.frozen_artifacts) ? "frozen" : pilotSource.frozen_artifacts.status,
       workflows: pilotSource.pilot.workflow_ids,
       fixtureIds: pilotSource.pilot.fixture_ids,
       domains: pilotSource.pilot.coverage.domains,
@@ -242,7 +245,13 @@ function buildData() {
       reasoningEffort: pilotSource.target_surface.reasoning_effort,
       evidenceState: pilotSource.grading.evidence_state,
       humanReview: pilotSource.grading.human_review,
-      boundary: `${pilotSource.execution_boundary.data}; network and external side effects forbidden`
+      boundary: `${pilotSource.execution_boundary.data}; network and external side effects forbidden`,
+      preflightInfrastructure: {
+        evidenceState: pilotInfrastructure.evidence_state,
+        completedCells: pilotInfrastructure.preflight.completed_cells,
+        scoredCells: pilotInfrastructure.scored.completed_cells,
+        replacementApproval: pilotInfrastructure.replacement.approval
+      }
     },
     statefulLoop: {
       processId: statefulLoopConfig.process_id,
@@ -273,6 +282,16 @@ function buildData() {
       stateLayers,
       promotion: statefulLoopConfig.promotion_defaults,
       stopRules: statefulLoopConfig.stop_rules
+    },
+    contextComposer: {
+      snapshotId: contextComposerSnapshot.snapshot_id,
+      scope: contextComposerSnapshot.scope,
+      behavioralEfficacy: contextComposerSnapshot.behavioral_efficacy,
+      gateResult: contextComposerSnapshot.gate_result,
+      fixtureCount: contextComposerFixtures.length,
+      families: countBy(contextComposerFixtures, "family"),
+      conditions: Object.entries(contextComposerSnapshot.conditions).map(([id, metrics]) => ({ id, ...metrics })),
+      limitations: contextComposerSnapshot.limitations
     },
     dynamicTechniques,
     skillCandidates,
@@ -312,7 +331,8 @@ function checkData(expected, actual) {
     ["skill candidate IDs", expected.skillCandidates.map((item) => item.id).join(","), actual.skillCandidates.map((item) => item.id).join(",")],
     ["ledger counts", JSON.stringify(Object.fromEntries(Object.entries(expected.ledgers).map(([key, value]) => [key, value.count]))), JSON.stringify(Object.fromEntries(Object.entries(actual.ledgers).map(([key, value]) => [key, value.count])))],
     ["pilot state", `${expected.pilot.status}:${expected.pilot.executionCells}`, `${actual.pilot.status}:${actual.pilot.executionCells}`],
-    ["stateful loop", JSON.stringify(expected.statefulLoop), JSON.stringify(actual.statefulLoop)]
+    ["stateful loop", JSON.stringify(expected.statefulLoop), JSON.stringify(actual.statefulLoop)],
+    ["context composer", JSON.stringify(expected.contextComposer), JSON.stringify(actual.contextComposer)]
   ];
   const failures = checks.filter(([, expectedValue, actualValue]) => expectedValue !== actualValue);
   if (failures.length) {

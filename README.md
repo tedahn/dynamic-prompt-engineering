@@ -21,13 +21,14 @@ The working thesis is deliberately narrow: a technique should become a skill onl
 4. Use the records in `research/ledgers/` for claims, sources, assumptions, evaluations, and changes.
 5. Review `research/DYNAMIC_PROMPTING_TECHNIQUES.md` and the frozen evaluation lab in `research/evaluations/professionalize-prompt/`.
 6. Review the governed state-evolution process in `research/evaluations/codex-stateful-loop/`; its local demo is model-free and live cells require a separate approval record.
-7. Execute `research/NEXT_ACTION-001.md` only after assigning a named owner and approving its run budget.
+7. Execute the frozen `research/NEXT_ACTION-001.md` pilot through preflight and scored cells; its development result cannot authorize adoption.
 8. For a ChatGPT Project, complete the local safety check and follow `chatgpt-project/UPLOAD_MANIFEST.md` manually.
 
 ## Repository map
 
 - `chatgpt-project/`: validated, copy-ready ChatGPT Project initialization pack.
 - `research/`: current brief, plan, surface registry, technique taxonomy, next action, and live ledgers.
+- `skills/context-composer/`: working repository-local T-005 candidate; validated mechanically but intentionally uninstalled.
 - `research/evaluations/professionalize-prompt/`: immutable skill snapshot, baseline/ablation workflows, 45 fixtures, rubrics, score ledgers, and deterministic harness.
 - `research/evaluations/codex-stateful-loop/`: event-sourced context loop, six evaluation conditions, state schemas, 12 development episodes, guarded Codex adapter, human promotion/rollback gates, and tests.
 - `dashboard/`: offline visual observatory plus a reproducible adapter from canonical research records.

@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "experiment_id": "EXP-PP-V2-PILOT",
-  "status": "pilot-authorized-pending-preflight",
+  "status": "pilot-authorized-frozen",
   "authorized_at": "2026-07-28T21:49:00Z",
   "authorization_evidence": "Current Codex task user message: yes go ahead and do that",
   "owner": "Ted Ahn (current workspace owner)",
@@ -79,7 +79,7 @@
     "execution_seed": 20260728,
     "grade_seed": 7282026,
     "concurrency": 1,
-    "expected_plan_sha256": "TO_BE_FROZEN_BEFORE_PREFLIGHT",
+    "expected_plan_sha256": "cad385b23411bdd2e3911c3340bf768f86fc9f70fd76e07f6fe2a36c05e92848",
     "coverage": {
       "domains": 5,
       "modes": ["prompt-only", "default", "execute-only"],
@@ -117,9 +117,20 @@
     "human_review": "Required before any behavioral score is final",
     "pairwise": "Explicit blinded A/B/C ranking; never inferred from scalar score"
   },
-  "frozen_artifacts": {
-    "status": "TO_BE_FROZEN_BEFORE_PREFLIGHT"
-  },
+  "frozen_artifacts": [
+    {"path": "PILOT_EXECUTION_SPEC.md", "sha256": "8642124feaecdbcfea037bb16d9365643ed75514009ebe8cbc9634d049820d5b", "bytes": 2571},
+    {"path": "PROTOCOL_AMENDMENT.md", "sha256": "379c45c9dc1ec5ffbc0213f377a983925054828857d8e551e32c8cde173e50e0", "bytes": 2447},
+    {"path": "README.md", "sha256": "cce4f8a5e246ee88634e1a79d897e752a08e56d47713583ff6690ad3b0619a3d", "bytes": 1456},
+    {"path": "fixtures/pilot-fixtures-v2.jsonl", "sha256": "54b6d3453f5aefd39f0e105a11e4bbfa44abfbce654a9af082abb56d1031d7e8", "bytes": 3570},
+    {"path": "fixtures/pilot-artifacts-v2.json", "sha256": "a62b837c603c41e3bcca529b57f98b12c3024b801747d01f522e542ab5458057", "bytes": 2131},
+    {"path": "workflows/workflows-pilot-v2.json", "sha256": "d6d9cc20eac50c38030c6055e39f308bbb6688040bf052c71ac6f38be4c4c226", "bytes": 1591},
+    {"path": "rubrics/pilot-rubric-v2.json", "sha256": "16aa3382d7eb8750bac3967f1557d3f483cb7936eb20272a080448809bee855c", "bytes": 2971},
+    {"path": "rubrics/model-grader-output-schema-v2.json", "sha256": "fe520e0a8a7b4ff078e528fd72ca67833e7645e9d6bfc05abc08d197da393872", "bytes": 3571},
+    {"path": "scripts/run_pilot.py", "sha256": "aade1673c4dd0f2dab12ab186d354325bf72f646b1a42205be90cf543e7ac7aa", "bytes": 74555},
+    {"path": "scripts/grade_pilot.py", "sha256": "717f569a93a47e47517e31cd82df3689c9d925ae166f91d1e3bd77cceb8c56be", "bytes": 74927},
+    {"path": "tests/test_run_pilot.py", "sha256": "fe859e4adf8e18a2562bc5df33150b998c72e1ff06ab89f3c1c559e30135d79b", "bytes": 13507},
+    {"path": "tests/test_grade_pilot.py", "sha256": "9cb8567e2b1521bbdba8d7768283f1d92a06d24852489341543988f68ba6814e", "bytes": 15376}
+  ],
   "stop_rules": [
     "artifact or expected-plan hash mismatch",
     "CLI version or requested model alias changes",

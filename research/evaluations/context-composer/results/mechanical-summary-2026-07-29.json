@@ -1,0 +1,21 @@
+{
+  "snapshot_id": "CC-MECH-2026-07-29-01",
+  "as_of": "2026-07-29",
+  "scope": "deterministic packet-construction evaluation only",
+  "behavioral_efficacy": null,
+  "fixtures": 12,
+  "conditions": {
+    "B0_FULL_DUMP": {"required_recall_macro": 1.0, "precision_macro": 0.4722, "critical_failures": 2, "stale_failures": 2, "budget_failures": 0, "route_accuracy": 0.3333, "ordering_failures": 0},
+    "B1_RECENCY": {"required_recall_macro": 0.7083, "precision_macro": 0.2917, "critical_failures": 2, "stale_failures": 2, "budget_failures": 0, "route_accuracy": 0.0, "ordering_failures": 1},
+    "B2_KEYWORD_TOPK": {"required_recall_macro": 0.875, "precision_macro": 0.4028, "critical_failures": 2, "stale_failures": 5, "budget_failures": 0, "route_accuracy": 0.0, "ordering_failures": 1},
+    "C1_COMPOSED": {"required_recall_macro": 1.0, "precision_macro": 0.4861, "critical_failures": 0, "stale_failures": 0, "budget_failures": 0, "route_accuracy": 0.5833, "ordering_failures": 0},
+    "C2_ROUTED": {"required_recall_macro": 1.0, "precision_macro": 0.5694, "critical_failures": 0, "stale_failures": 0, "budget_failures": 0, "route_accuracy": 1.0, "ordering_failures": 0}
+  },
+  "gate_result": "mechanical-pilot-gate-passed",
+  "limitations": [
+    "Fixtures are synthetic development cases.",
+    "The candidate uses curated retrieval metadata.",
+    "No model generated answers, so grounded outcome quality, latency, tokens, cost, and transfer remain unknown.",
+    "Dependency ordering is mechanically validated; behavioral ordering effects remain untested."
+  ]
+}

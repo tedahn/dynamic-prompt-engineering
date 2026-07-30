@@ -385,10 +385,21 @@ def _experiment_errors(inputs: PilotInputs) -> list[str]:
     if not isinstance(preflight, dict):
         errors.append("Experiment preflight must be an object")
         preflight = {}
-    if preflight.get("fixture_id") != "FX-ED-01":
-        errors.append("Experiment preflight fixture drift")
-    if preflight.get("workflow_ids") != list(WORKFLOW_IDS):
+    expected_preflight = generate_preflight_plan(inputs, "CANONICAL-PREFLIGHT")
+    expected_fixture_ids = [row["fixture_id"] for row in expected_preflight]
+    expected_pairs = [
+        {"workflow_id": row["workflow_id"], "fixture_id": row["fixture_id"]}
+        for row in expected_preflight
+    ]
+    expected_tool_policies = [row["tool_policy"] for row in expected_preflight]
+    if preflight.get("fixture_ids") != expected_fixture_ids:
+        errors.append("Experiment preflight fixture order drift")
+    if preflight.get("workflow_ids") != [row["workflow_id"] for row in expected_preflight]:
         errors.append("Experiment preflight workflow order drift")
+    if preflight.get("workflow_fixture_pairs") != expected_pairs:
+        errors.append("Experiment preflight workflow-fixture pair drift")
+    if preflight.get("tool_policies") != expected_tool_policies:
+        errors.append("Experiment preflight tool-policy drift")
     if preflight.get("cells") != 3 or preflight.get("excluded_from_scores") is not True:
         errors.append("Experiment preflight count or exclusion drift")
     retry = experiment.get("retry_policy")
@@ -727,9 +738,16 @@ def build_codex_command(
 
 
 def isolated_environment(codex_home: Path, temporary_dir: Path | None = None) -> dict[str, str]:
+    effective_home = codex_home
+    if temporary_dir is not None:
+        effective_home = temporary_dir / "codex-home"
+        effective_home.mkdir(parents=True, exist_ok=True)
+        isolated_auth = effective_home / "auth.json"
+        if not isolated_auth.exists():
+            isolated_auth.symlink_to((codex_home / "auth.json").resolve())
     return {
-        "CODEX_HOME": str(codex_home),
-        "HOME": str(codex_home),
+        "CODEX_HOME": str(effective_home),
+        "HOME": str(effective_home),
         "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
@@ -771,7 +789,8 @@ def inspect_runtime(cli_path: Path, codex_home: Path) -> dict[str, Any]:
     if not errors:
         cli_sha256 = sha256_file(cli_path)
         cli_bytes = cli_path.stat().st_size
-        env = isolated_environment(codex_home)
+        inspection_root = Path(tempfile.mkdtemp(prefix="pilot-v2-runtime-inspect-"))
+        env = isolated_environment(codex_home, inspection_root)
         try:
             version = subprocess.run(
                 [str(cli_path), "--version"],
@@ -819,6 +838,8 @@ def inspect_runtime(cli_path: Path, codex_home: Path) -> dict[str, Any]:
                     errors.append(f"CLI feature registry is missing frozen controls: {missing}")
         except (OSError, subprocess.SubprocessError) as exc:
             errors.append(f"Runtime readiness check failed: {type(exc).__name__}")
+        finally:
+            shutil.rmtree(inspection_root, ignore_errors=True)
     return {
         "ok": not errors,
         "errors": errors,
@@ -1262,13 +1283,17 @@ def execute_cell(
         before = capture_workspace(workspace)
         atomic_write_json(attempt_dir / "workspace-before.json", before.public)
         command = build_codex_command(cli_path, codex_home, row["tool_policy"], workspace)
+        environment = isolated_environment(codex_home, temp_dir)
         invocation = _invoke_cli(
             command,
             prompt,
-            isolated_environment(codex_home, temp_dir),
+            environment,
             workspace,
             timeout_seconds,
         )
+        runtime_home = Path(environment["CODEX_HOME"])
+        if runtime_home != codex_home:
+            shutil.rmtree(runtime_home, ignore_errors=True)
         after = capture_workspace(workspace)
         workspace_diff, changed_paths = render_workspace_diff(before, after)
         parsed = parse_cli_events(invocation["stdout"])
@@ -1343,7 +1368,7 @@ def execute_cell(
             "thread_id": parsed["thread_id"],
             "usage": parsed["usage"],
             "command": command,
-            "environment_keys": sorted(isolated_environment(codex_home, temp_dir)),
+            "environment_keys": sorted(environment),
             "timeout_seconds": timeout_seconds,
             "retry_backoff_seconds": list(retry_backoff_seconds),
             "hashes": attempt_hashes,

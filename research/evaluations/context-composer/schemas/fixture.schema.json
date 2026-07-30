@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Context composer evaluation fixture",
+  "type": "object",
+  "required": ["fixture_id", "family", "query", "max_tokens", "allowed_scopes", "signals", "items", "expected"],
+  "properties": {
+    "fixture_id": {"type": "string", "pattern": "^CC-[0-9]{3}$"},
+    "family": {"type": "string"},
+    "query": {"type": "string", "minLength": 1},
+    "max_tokens": {"type": "integer", "minimum": 1},
+    "allowed_scopes": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "signals": {"type": "object", "required": ["needs_clarification", "update_sensitive"]},
+    "items": {"type": "array", "minItems": 1},
+    "expected": {"type": "object", "required": ["required_ids", "forbidden_ids", "stale_ids", "route"]}
+  },
+  "additionalProperties": false
+}

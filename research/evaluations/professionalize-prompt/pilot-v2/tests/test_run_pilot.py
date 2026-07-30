@@ -70,6 +70,34 @@ class RunPilotTests(unittest.TestCase):
         self.assertEqual({row["workflow_id"] for row in rows}, set(RUNNER.WORKFLOW_IDS))
         self.assertEqual({row["tool_policy"] for row in rows}, {"none", "workspace"})
 
+    def test_experiment_preflight_registry_matches_generated_plan(self) -> None:
+        rows = RUNNER.generate_preflight_plan(self.inputs, "CANONICAL-PREFLIGHT")
+        preflight = self.inputs.experiment["preflight"]
+        self.assertEqual(preflight["fixture_ids"], [row["fixture_id"] for row in rows])
+        self.assertEqual(preflight["workflow_ids"], [row["workflow_id"] for row in rows])
+        self.assertEqual(
+            preflight["workflow_fixture_pairs"],
+            [
+                {"workflow_id": row["workflow_id"], "fixture_id": row["fixture_id"]}
+                for row in rows
+            ],
+        )
+        self.assertEqual(preflight["tool_policies"], [row["tool_policy"] for row in rows])
+
+    def test_cell_environment_uses_a_fresh_runtime_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            auth_home = root / "auth-home"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}\n", encoding="utf-8")
+            runtime_root = root / "runtime"
+            environment = RUNNER.isolated_environment(auth_home, runtime_root)
+            runtime_home = Path(environment["CODEX_HOME"])
+            self.assertNotEqual(runtime_home, auth_home)
+            self.assertTrue((runtime_home / "auth.json").is_symlink())
+            self.assertFalse((runtime_home / "skills").exists())
+            self.assertFalse((runtime_home / "config.toml").exists())
+
     def test_codex_command_freezes_model_effort_features_and_policy(self) -> None:
         common = set(RUNNER.COMMON_FEATURE_DISABLES)
         shell = set(RUNNER.NONE_POLICY_FEATURE_DISABLES)
@@ -186,7 +214,6 @@ class RunPilotTests(unittest.TestCase):
 
             frozen_experiment = json.loads(json.dumps(self.inputs.experiment))
             frozen_experiment["status"] = "pilot-authorized-frozen"
-            frozen_experiment["preflight"]["fixture_id"] = "FX-ED-01"
             canonical_rows, _ = RUNNER.generate_scored_plan(
                 self.inputs,
                 "CANONICAL-RUN",
@@ -229,11 +256,11 @@ class RunPilotTests(unittest.TestCase):
             ]
             self.assertTrue(all(row["status"] == "completed" for row in metadata))
             self.assertTrue(all(row["requested_model"] == "gpt-5.6-sol" for row in metadata))
-            calls_before = int((codex_home / "exec-count.txt").read_text())
+            calls_before = int((cli.parent / "exec-count.txt").read_text())
             self.assertEqual(calls_before, 48)
 
             self.assertEqual(RUNNER.main(["run", *common, "--run-dir", str(run_dir)]), 0)
-            calls_after = int((codex_home / "exec-count.txt").read_text())
+            calls_after = int((cli.parent / "exec-count.txt").read_text())
             self.assertEqual(calls_after, calls_before)
 
     def _write_fake_codex(self, path: Path) -> Path:
@@ -259,7 +286,7 @@ if args[:2] == ["features", "list"]:
         print(f"{{name:<44}} stable             true")
     raise SystemExit(0)
 if "exec" in args:
-    counter = home / "exec-count.txt"
+    counter = Path(sys.argv[0]).resolve().parent / "exec-count.txt"
     count = int(counter.read_text()) + 1 if counter.exists() else 1
     counter.write_text(str(count))
     sys.stdin.read()

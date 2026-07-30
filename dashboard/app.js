@@ -227,12 +227,14 @@
       ["Execution cells", data.pilot.executionCells],
       ["Model alias", data.pilot.modelAlias],
       ["Reasoning", data.pilot.reasoningEffort],
+      ["Preflight evidence", `${data.pilot.preflightInfrastructure.completedCells} discarded · ${data.pilot.preflightInfrastructure.scoredCells} scored`],
+      ["Replacement gate", data.pilot.preflightInfrastructure.replacementApproval],
       ["Data boundary", "Synthetic only"]
     ];
     byId("pilot-facts").innerHTML = facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
     const sequence = [
-      { id: "01", name: "Freeze", note: "Artifacts and expected plan hash", current: true },
-      { id: "02", name: "Preflight", note: "Three discarded execution cells" },
+      { id: "01", name: "Freeze", note: "Artifacts and expected plan hash" },
+      { id: "02", name: "Preflight", note: "Replacement approval required", current: true },
       { id: "03", name: "Execute", note: "45 blinded scored cells" },
       { id: "04", name: "Grade", note: "Two provisional model graders" },
       { id: "05", name: "Review", note: "Human gate before final score" }
@@ -305,6 +307,21 @@
         <p>${escapeHtml(layer.visibility)}</p>
       </article>
     `).join("");
+  }
+
+  function renderContextComposer() {
+    const composer = data.contextComposer;
+    if (!composer) return;
+    byId("context-composer-status").textContent = `${humanize(composer.gateResult)} · behavioral unknown`;
+    byId("context-composer-scope").textContent = `${composer.fixtureCount} synthetic fixture families · ${composer.scope}.`;
+    byId("context-composer-conditions").innerHTML = composer.conditions.map((condition) => `
+      <article class="loop-condition${condition.id.startsWith("C") ? " loop-condition--candidate" : ""}">
+        <div><code>${escapeHtml(condition.id)}</code><span>${condition.critical_failures} critical · ${condition.stale_failures} stale</span></div>
+        <p>Recall ${condition.required_recall_macro.toFixed(2)} · precision ${condition.precision_macro.toFixed(2)}</p>
+        <small>Route ${(condition.route_accuracy * 100).toFixed(0)}% · ordering failures ${condition.ordering_failures}</small>
+      </article>
+    `).join("");
+    byId("context-composer-limit").textContent = composer.limitations[composer.limitations.length - 1];
   }
 
   const categoryLabels = {
@@ -421,6 +438,7 @@
     renderFixtureCoverage();
     renderPilot();
     renderStatefulLoop();
+    renderContextComposer();
     renderTechniques();
     renderCandidates();
     renderLedgers();
