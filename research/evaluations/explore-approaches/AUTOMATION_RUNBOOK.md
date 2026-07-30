@@ -11,7 +11,7 @@ Copy `config/pipeline-v1.json` to a private configuration file and set:
 - `evaluation.adapter_env_allowlist`, containing only environment variables required by those adapters;
 - `holdout_verification.allowed_signers_path` and `expected_identity` for the named holdout owner;
 - `approval_verification.allowed_signers_path` and `expected_identity`;
-- the GitHub repository, protected base branch, feature branch, configured required-check identities, system `skill-installer` helper, root-skill paths, and non-empty canary validator.
+- the GitHub repository, protected base branch, feature branch, exact required-check identities, non-placeholder `promotion.automation_actor`, a non-empty `promotion.required_reviewer_logins` allowlist, system `skill-installer` helper, root-skill paths, and non-empty canary validator.
 
 Keep credentials, the live configuration and signer trust files, private holdout tasks, raw outputs, grades, and the run directory outside this repository. Each adapter runs in a fresh process with `shell=False`, a capped response size, a timeout, and at most two transient retries. Subject executable/script hashes and the resolved runtime identity are frozen; every successful response must echo that identity, assert `fresh_session: true`, and explicitly report `completed`. Raw request, response, normalization, and attempt-record hashes are reverified before resume, blinding, and summary construction. Unavailable telemetry cannot pass.
 
@@ -90,7 +90,7 @@ python research/evaluations/explore-approaches/scripts/automate_lifecycle.py \
   --max-review-wait-seconds 3600
 ```
 
-The command prepares a clean commit at the exact signed base SHA, pushes without force, and opens or resumes the PR. Recovery revalidates clone origin, branch, ancestry, clean tree, exact diff, manifest, approval, and configuration bindings. It requires an unchanged head, the configured base, an independent GitHub approval, `CLEAN` merge state, and every exact configured check. Release recovery re-queries GitHub and reconciles a canonical receipt. It then verifies the complete promoted manifest, invokes the configured system installer at the exact merge SHA into isolated staging, verifies the downloaded subtree, swaps it atomically, and activates only after the fresh-process canary explicitly passes. Failure quarantines the candidate and restores the verified prior root skill; active recovery revalidates signed approval, receipts, event bindings, and the installed tree.
+The command prepares a clean commit at the exact signed base SHA, pushes without force, and opens or resumes the PR. Recovery revalidates clone origin, branch, ancestry, clean tree, exact diff, manifest, approval, and configuration bindings. It requires an unchanged head, the configured base, a current GitHub approval from an exact login in the frozen reviewer allowlist, `CLEAN` merge state, and every exact configured check; the PR author and automation actor cannot satisfy review. Release recovery re-queries GitHub and reconciles a canonical receipt. It then verifies the complete promoted manifest, invokes the configured system installer at the exact merge SHA into isolated staging, verifies the downloaded subtree, swaps it atomically, and activates only after the fresh-process canary explicitly passes. Failure quarantines the candidate and restores the verified prior root skill; active recovery revalidates signed approval, receipts, event bindings, and the installed tree.
 
 PR, release, install-intent, canary, installation, quarantine, and rollback records are sealed and hash-bound to lifecycle events. Rerunning the same command resumes `frozen`, `promotable`, `promoting`, `pr-open`, `merged`, `installing`, or `canary` without trusting a pre-existing receipt; root installation uses an exclusive lock and reconciles filesystem hashes before proceeding.
 
@@ -98,4 +98,4 @@ Use `status --run-dir /private/path/explore-run` to audit the hash chain. Exit `
 
 ## Current non-readiness
 
-The repository configuration intentionally contains empty live adapter argv, signer path, and signer identity. No fresh private holdout, human-final review, signed approval, reviewed PR, live merge, or production root install has been performed.
+The repository configuration intentionally contains empty live adapter argv, signer path, and signer identity plus placeholder GitHub automation and reviewer logins. No fresh private holdout, human-final review, signed approval, reviewed PR, live merge, or production root install has been performed.

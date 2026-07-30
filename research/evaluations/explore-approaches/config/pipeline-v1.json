@@ -46,7 +46,9 @@
       "adapter_id": "",
       "provider_id": "",
       "model_id": "",
-      "settings": {}
+      "settings": {},
+      "artifact_paths": [],
+      "image_digest": ""
     },
     "subject_adapter_argv": [],
     "grader_adapter_argv": [],
@@ -94,6 +96,8 @@
     "commit_message": "Add explore-approaches governed lifecycle",
     "pr_title": "Add explore-approaches governed lifecycle",
     "merge_method": "squash",
+    "automation_actor": "REPLACE_WITH_AUTOMATION_ACTOR",
+    "required_reviewer_logins": ["REPLACE_WITH_INDEPENDENT_REVIEWER"],
     "required_status_checks": ["validate"],
     "copy_trees": [
       "skills/explore-approaches",

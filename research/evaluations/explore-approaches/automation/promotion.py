@@ -252,8 +252,15 @@ def validate_approval(
         raise PipelineError("Approval candidate manifest hash mismatch")
 
     evidence = approval["evidence"]
+    evidence_manifest_path = evaluation_summary_path.parent / "evidence-manifest.json"
+    if not evidence_manifest_path.is_file() or evidence_manifest_path.is_symlink():
+        raise PipelineError("Promotion requires the canonical evaluation evidence manifest")
+    evidence_manifest_sha256 = sha256_file(evidence_manifest_path)
+    if summary.get("evidence", {}).get("evidence_manifest_sha256") != evidence_manifest_sha256:
+        raise PipelineError("Evaluation summary does not bind the canonical evidence manifest")
     expected_evidence = {
         "evaluation_summary_sha256": sha256_file(evaluation_summary_path),
+        "evidence_manifest_sha256": evidence_manifest_sha256,
         "holdout_manifest_sha256": sha256_file(holdout_manifest_path),
         "protocol_sha256": summary.get("protocol_sha256") or load_json(evaluation_summary_path).get("protocol_sha256"),
         "rubric_sha256": summary.get("rubric_sha256") or load_json(evaluation_summary_path).get("rubric_sha256"),
@@ -505,6 +512,39 @@ def prepare_clean_promotion(
     }
 
 
+def _canonical_materialized_tree(
+    source_checkout: Path,
+    base_commit: str,
+    work_root: Path,
+    manifest: dict[str, Any],
+) -> str:
+    """Rebuild the only authorized full tree from the signed base and manifest."""
+
+    with tempfile.TemporaryDirectory(prefix=".promotion-rederive-", dir=work_root) as temporary:
+        canonical = Path(temporary) / "canonical-repository"
+        run_command(["git", "clone", "--no-checkout", "--", str(source_checkout), str(canonical)])
+        run_command(["git", "config", "core.hooksPath", "/dev/null"], cwd=canonical)
+        run_command(["git", "checkout", "--detach", base_commit], cwd=canonical)
+        allowed = materialize_change(source_checkout, canonical, manifest)
+        run_command(["git", "add", "--", *allowed], cwd=canonical)
+        staged = {
+            path
+            for path in run_command(
+                ["git", "diff", "--cached", "--name-only", "-z"], cwd=canonical
+            ).stdout.split("\0")
+            if path
+        }
+        if staged - set(allowed):
+            raise PipelineError("Canonical promotion materialization escaped the approved manifest")
+        untracked = run_command(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=canonical
+        ).stdout
+        if untracked:
+            raise PipelineError("Canonical promotion materialization produced untracked files")
+        run_command(["git", "diff", "--cached", "--check"], cwd=canonical)
+        return run_command(["git", "write-tree"], cwd=canonical).stdout.strip()
+
+
 def validate_prepared_promotion(
     prepared: dict[str, Any],
     run_dir: Path,
@@ -583,6 +623,9 @@ def validate_prepared_promotion(
         raise PipelineError(f"Prepared promotion diff contains paths outside the approved manifest: {unauthorized}")
     run_command(["git", "diff", "--check", f"{base_commit}..{actual_head}"], cwd=clone)
     verify_promoted_manifest(clone, manifest)
+    canonical_tree = _canonical_materialized_tree(clone, base_commit, governed_root, manifest)
+    if actual_tree != canonical_tree:
+        raise PipelineError("Prepared promotion tree differs from canonical approved materialization")
     return prepared
 
 
@@ -703,13 +746,48 @@ def validate_release_record(
     return release
 
 
+def _reviewer_policy(
+    automation_actor: Any, required_reviewer_logins: Any
+) -> tuple[str, dict[str, str]]:
+    if (
+        not isinstance(automation_actor, str)
+        or not automation_actor.strip()
+        or "replace_with" in automation_actor.casefold()
+    ):
+        raise PipelineError("A non-placeholder GitHub automation actor is required")
+    if (
+        not isinstance(required_reviewer_logins, (list, tuple))
+        or not required_reviewer_logins
+    ):
+        raise PipelineError("At least one allowed GitHub reviewer login is required")
+
+    allowed: dict[str, str] = {}
+    for value in required_reviewer_logins:
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or "replace_with" in value.casefold()
+        ):
+            raise PipelineError("Allowed GitHub reviewer logins must be non-placeholder strings")
+        login = value.strip()
+        normalized = login.casefold()
+        if normalized in allowed:
+            raise PipelineError("Allowed GitHub reviewer logins must be unique")
+        allowed[normalized] = login
+    actor = automation_actor.strip().casefold()
+    if actor in allowed:
+        raise PipelineError("The automation actor cannot be an allowed independent reviewer")
+    return actor, allowed
+
+
 def _validated_pr_snapshot(
     snapshot: dict[str, Any],
     *,
     expected_head: str,
     expected_base: str,
     expected_state: str,
-    automation_actor: str | None,
+    automation_actor: Any,
+    required_reviewer_logins: Any,
     required_checks: Sequence[str],
 ) -> dict[str, Any]:
     if snapshot.get("state") != expected_state:
@@ -721,21 +799,35 @@ def _validated_pr_snapshot(
     if expected_state == "OPEN" and snapshot.get("mergeStateStatus") != "CLEAN":
         raise PipelineError("Open pull request does not have GitHub CLEAN merge status")
 
+    automation_login, allowed_reviewers = _reviewer_policy(
+        automation_actor, required_reviewer_logins
+    )
     author = ((snapshot.get("author") or {}).get("login") or "").casefold()
-    excluded_reviewers = {author}
-    if automation_actor:
-        excluded_reviewers.add(automation_actor.casefold())
+    excluded_reviewers = {author, automation_login}
+    reviews = snapshot.get("reviews")
+    if not isinstance(reviews, list):
+        raise PipelineError("Pull request review evidence is malformed")
+    latest_reviews: dict[str, tuple[tuple[str, int], str, str]] = {}
+    for index, review in enumerate(reviews):
+        if not isinstance(review, dict):
+            raise PipelineError("Pull request review evidence is malformed")
+        login = str((review.get("author") or {}).get("login") or "").strip()
+        if not login:
+            continue
+        normalized = login.casefold()
+        order = (str(review.get("submittedAt") or ""), index)
+        previous = latest_reviews.get(normalized)
+        if previous is None or order >= previous[0]:
+            latest_reviews[normalized] = (order, login, str(review.get("state") or ""))
     approved_reviewers = sorted(
-        {
-            str((review.get("author") or {}).get("login") or "")
-            for review in snapshot.get("reviews") or []
-            if review.get("state") == "APPROVED"
-            and str((review.get("author") or {}).get("login") or "").casefold() not in excluded_reviewers
-            and str((review.get("author") or {}).get("login") or "").strip()
-        }
+        login
+        for normalized, (_, login, state) in latest_reviews.items()
+        if normalized in allowed_reviewers
+        and normalized not in excluded_reviewers
+        and state == "APPROVED"
     )
     if not approved_reviewers:
-        raise PipelineError("Pull request lacks an independent approving reviewer")
+        raise PipelineError("Pull request lacks a current approval from an allowed independent reviewer")
 
     checks = snapshot.get("statusCheckRollup")
     if not isinstance(checks, list) or not checks:
@@ -778,6 +870,7 @@ def merge_reviewed_pr(pr_url: str, expected_head: str, config: dict[str, Any]) -
         expected_base=promotion["base_branch"],
         expected_state=expected_state,
         automation_actor=promotion.get("automation_actor"),
+        required_reviewer_logins=promotion.get("required_reviewer_logins"),
         required_checks=promotion.get("required_status_checks", ()),
     )
     if before.get("state") == "MERGED":
@@ -803,6 +896,7 @@ def merge_reviewed_pr(pr_url: str, expected_head: str, config: dict[str, Any]) -
         expected_base=promotion["base_branch"],
         expected_state="MERGED",
         automation_actor=promotion.get("automation_actor"),
+        required_reviewer_logins=promotion.get("required_reviewer_logins"),
         required_checks=promotion.get("required_status_checks", ()),
     )
     merge_commit = (after.get("mergeCommit") or {}).get("oid")
@@ -1038,6 +1132,12 @@ def _path_hashes(path: Path) -> dict[str, str] | None:
     return _tree_hashes(path)
 
 
+def _path_present(path: Path) -> bool:
+    """Treat broken symlinks as present without following them."""
+
+    return path.exists() or path.is_symlink()
+
+
 def validate_installation_receipt(
     run_dir: Path,
     *,
@@ -1158,10 +1258,9 @@ def atomic_install(
 
         previous_existed = bool(intent["previous_existed"])
         previous_hashes = intent["previous_file_hashes"]
-        if intent.get("phase") == "rolled-back" or quarantine.exists():
-            quarantine_hashes = _path_hashes(quarantine)
-            if quarantine_hashes is not None and quarantine_hashes != hashes:
-                raise PipelineError("Quarantine tree differs from the immutable failed candidate")
+        if intent.get("phase") == "rolled-back" or _path_present(quarantine):
+            if _path_present(quarantine) and quarantine.is_dir() and not quarantine.is_symlink():
+                _tree_hashes(quarantine)
             destination_hashes = _path_hashes(destination)
             backup_hashes = _path_hashes(backup)
             if previous_existed:
@@ -1239,37 +1338,72 @@ def atomic_install(
             if _path_hashes(destination) != hashes:
                 raise PipelineError("Installed tree changed while the canary ran")
         except Exception as exc:
-            destination_hashes = _path_hashes(destination)
-            if destination_hashes == hashes:
-                if quarantine.exists():
-                    raise PipelineError("Cannot quarantine failed candidate: transaction quarantine already exists") from exc
-                os.replace(destination, quarantine)
-                _fsync_directory(skills_root)
-                _fsync_directory(quarantine_root)
-            if previous_existed:
-                if _path_hashes(backup) != previous_hashes:
-                    raise PipelineError("Cannot restore previous installation from the recorded backup") from exc
-                os.replace(backup, destination)
-                _fsync_directory(backup_root)
-                _fsync_directory(skills_root)
-                if _path_hashes(destination) != previous_hashes:
-                    raise PipelineError("Restored installation differs from the pre-install tree") from exc
-            intent = _write_install_intent(intent_path, intent, "rolled-back")
-            rollback = seal_record(
-                {
-                    "schema_version": "2.0",
-                    "rolled_back_at": iso_now(),
-                    "transaction_id": transaction_id,
-                    "intent_sha256": intent["record_sha256"],
-                    "merge_commit": merge_commit,
-                    "destination": str(destination),
-                    "restored_previous": previous_existed,
-                    "quarantine": str(quarantine) if quarantine.exists() else None,
-                    "reason": str(exc),
-                    "status": "rolled-back",
-                }
-            )
-            _durable_write_json(run_dir / "rollback-record.json", rollback)
+            try:
+                destination_present = _path_present(destination)
+                destination_hashes = (
+                    _tree_hashes(destination)
+                    if destination_present and destination.is_dir() and not destination.is_symlink()
+                    else None
+                )
+                backup_hashes = _path_hashes(backup)
+                previous_is_active = (
+                    previous_existed
+                    and destination_present
+                    and destination_hashes == previous_hashes
+                    and backup_hashes is None
+                )
+                if destination_present and not previous_is_active:
+                    if _path_present(quarantine):
+                        raise PipelineError(
+                            "Cannot quarantine failed active tree: transaction quarantine already exists"
+                        )
+                    failed_hashes = destination_hashes
+                    os.replace(destination, quarantine)
+                    _fsync_directory(skills_root)
+                    _fsync_directory(quarantine_root)
+                    if _path_present(destination) or not _path_present(quarantine):
+                        raise PipelineError("Failed active tree was not durably quarantined")
+                    if failed_hashes is not None and _path_hashes(quarantine) != failed_hashes:
+                        raise PipelineError("Quarantined failed tree differs from its pre-move state")
+
+                if previous_existed:
+                    destination_hashes = _path_hashes(destination)
+                    backup_hashes = _path_hashes(backup)
+                    if destination_hashes == previous_hashes and backup_hashes is None:
+                        pass
+                    elif destination_hashes is None and backup_hashes == previous_hashes:
+                        os.replace(backup, destination)
+                        _fsync_directory(backup_root)
+                        _fsync_directory(skills_root)
+                    else:
+                        raise PipelineError(
+                            "Cannot restore previous installation from the recorded backup"
+                        )
+                    if _path_hashes(destination) != previous_hashes or _path_hashes(backup) is not None:
+                        raise PipelineError("Restored installation differs from the pre-install tree")
+                elif _path_hashes(destination) is not None:
+                    raise PipelineError("Failed installation left an unexpected active destination")
+
+                intent = _write_install_intent(intent_path, intent, "rolled-back")
+                rollback = seal_record(
+                    {
+                        "schema_version": "2.0",
+                        "rolled_back_at": iso_now(),
+                        "transaction_id": transaction_id,
+                        "intent_sha256": intent["record_sha256"],
+                        "merge_commit": merge_commit,
+                        "destination": str(destination),
+                        "restored_previous": previous_existed,
+                        "quarantine": str(quarantine) if _path_present(quarantine) else None,
+                        "reason": str(exc),
+                        "status": "rolled-back",
+                    }
+                )
+                _durable_write_json(run_dir / "rollback-record.json", rollback)
+            except Exception as rollback_exc:
+                raise PipelineError(
+                    f"Canary failed and rollback could not safely restore root state: {rollback_exc}"
+                ) from exc
             raise PipelineError(f"Canary failed; installation rolled back: {exc}") from exc
         finally:
             _clear_installer_workspace(skills_root, installer_root)

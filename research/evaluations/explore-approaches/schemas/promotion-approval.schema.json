@@ -44,6 +44,7 @@
       "additionalProperties": false,
       "required": [
         "evaluation_summary_sha256",
+        "evidence_manifest_sha256",
         "holdout_manifest_sha256",
         "protocol_sha256",
         "rubric_sha256",
@@ -52,6 +53,7 @@
       ],
       "properties": {
         "evaluation_summary_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "evidence_manifest_sha256": {"pattern": "^[0-9a-f]{64}$"},
         "holdout_manifest_sha256": {"pattern": "^[0-9a-f]{64}$"},
         "protocol_sha256": {"pattern": "^[0-9a-f]{64}$"},
         "rubric_sha256": {"pattern": "^[0-9a-f]{64}$"},

@@ -20,6 +20,7 @@
     "rubric_content_sha256",
     "arm_materials_sha256",
     "subject_runtime_sha256",
+    "plan_design_sha256",
     "signature"
   ],
   "properties": {
@@ -79,6 +80,9 @@
       "$ref": "#/$defs/sha256"
     },
     "subject_runtime_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "plan_design_sha256": {
       "$ref": "#/$defs/sha256"
     },
     "signature": {

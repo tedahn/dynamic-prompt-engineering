@@ -279,6 +279,7 @@ def _approval_template(run_dir: Path, config: dict[str, Any]) -> dict[str, Any]:
         },
         "evidence": {
             "evaluation_summary_sha256": sha256_file(summary_path),
+            "evidence_manifest_sha256": sha256_file(run_dir / "evidence-manifest.json"),
             "holdout_manifest_sha256": sha256_file(run_dir / "holdout-manifest.json"),
             "protocol_sha256": plan["protocol_sha256"],
             "rubric_sha256": plan["rubric_sha256"],

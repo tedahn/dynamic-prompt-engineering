@@ -9,11 +9,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from automation.core import build_candidate_manifest, load_config
-from automation.evaluation import _cluster_interval, invoke_adapter
+from automation.core import PipelineError, build_candidate_manifest, load_config
+from automation.evaluation import _cluster_interval, _subject_runtime_identity, invoke_adapter
 
 
 class AdversarialAutomationTest(unittest.TestCase):
+    def test_module_runtime_without_declared_code_provenance_is_rejected(self) -> None:
+        config = {
+            "evaluation": {
+                "subject_adapter_argv": [sys.executable, "-m", "provider_adapter", "{input}", "{output}"],
+                "subject_runtime": {
+                    "adapter_id": "provider-adapter",
+                    "provider_id": "provider",
+                    "model_id": "model",
+                    "settings": {},
+                },
+            }
+        }
+        with self.assertRaisesRegex(PipelineError, "artifact_paths or an immutable image_digest"):
+            _subject_runtime_identity(config)
+
     def test_candidate_manifest_excludes_unrelated_dirty_workspace_artifacts(self) -> None:
         repo_root = Path(__file__).resolve().parents[4]
         config = load_config(Path(__file__).resolve().parents[1] / "config" / "pipeline-v1.json")

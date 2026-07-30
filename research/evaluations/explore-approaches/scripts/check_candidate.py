@@ -170,6 +170,7 @@ def validate(repo_root: Path) -> dict[str, Any]:
         "adapter_request_schema": repo_root / "research/evaluations/explore-approaches/schemas/adapter-request.schema.json",
         "adapter_response_schema": repo_root / "research/evaluations/explore-approaches/schemas/adapter-response.schema.json",
         "evaluation_summary_schema": repo_root / "research/evaluations/explore-approaches/schemas/evaluation-summary.schema.json",
+        "evidence_manifest_schema": repo_root / "research/evaluations/explore-approaches/schemas/evidence-manifest.schema.json",
         "human_review_schema": repo_root / "research/evaluations/explore-approaches/schemas/human-review.schema.json",
         "pipeline_config": repo_root / "research/evaluations/explore-approaches/config/pipeline-v1.json",
         "automation_core": repo_root / "research/evaluations/explore-approaches/automation/core.py",
@@ -213,7 +214,7 @@ def validate(repo_root: Path) -> dict[str, Any]:
     if not required_approval.issubset(set(schema.get("required", []))):
         errors.append("promotion schema omits required approval evidence")
     evidence_required = set(schema.get("properties", {}).get("evidence", {}).get("required", []))
-    if not {"evaluation_summary_sha256", "holdout_manifest_sha256", "protocol_sha256", "rubric_sha256", "rollback_evidence_sha256", "config_sha256"}.issubset(evidence_required):
+    if not {"evaluation_summary_sha256", "evidence_manifest_sha256", "holdout_manifest_sha256", "protocol_sha256", "rubric_sha256", "rollback_evidence_sha256", "config_sha256"}.issubset(evidence_required):
         errors.append("promotion schema omits immutable evidence bindings")
     serialized_schema = json.dumps(schema, sort_keys=True)
     for circular_field in ["github_pr_url", "merged_commit"]:
@@ -232,6 +233,8 @@ def validate(repo_root: Path) -> dict[str, Any]:
         "rubric_sha256",
         "rubric_content_sha256",
         "arm_materials_sha256",
+        "subject_runtime_sha256",
+        "plan_design_sha256",
         "signature",
     }.issubset(holdout_required):
         errors.append("holdout schema omits custody or frozen-evidence bindings")
@@ -290,8 +293,22 @@ def validate(repo_root: Path) -> dict[str, Any]:
     for key in ["subject_adapter_argv", "grader_adapter_argv", "canary_adapter_argv", "thresholds"]:
         if key not in config.get("evaluation", {}):
             errors.append(f"pipeline config missing: {key}")
-    if not config.get("promotion", {}).get("required_status_checks"):
+    promotion_config = config.get("promotion", {})
+    if not promotion_config.get("required_status_checks"):
         errors.append("pipeline config must name required GitHub status checks")
+    automation_actor = promotion_config.get("automation_actor")
+    if not isinstance(automation_actor, str) or "replace_with" not in automation_actor.casefold():
+        errors.append("committed pipeline config must keep the GitHub automation actor as a non-live placeholder")
+    reviewer_logins = promotion_config.get("required_reviewer_logins")
+    if (
+        not isinstance(reviewer_logins, list)
+        or not reviewer_logins
+        or any(
+            not isinstance(login, str) or "replace_with" not in login.casefold()
+            for login in reviewer_logins
+        )
+    ):
+        errors.append("committed pipeline config must keep required reviewer logins as non-live placeholders")
     evaluation = config.get("evaluation", {})
     if not REQUIRED_CONTENT_SAFETY_GATES.issubset(set(evaluation.get("critical_gate_ids", []))):
         errors.append("pipeline config does not classify both content-safety gates as critical")

@@ -100,6 +100,102 @@ class PromotionAutomationTest(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "outside the approved manifest"):
                 validate_prepared_promotion(seal_record(forged), root / "run", config, manifest, approval_sha256="a" * 64)
 
+    def test_recovered_prepared_promotion_rejects_intrafile_ledger_tampering(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = root / "repository"
+            repository.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=repository, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+            base_skill = repository / "skills/explore-approaches/SKILL.md"
+            base_skill.parent.mkdir(parents=True)
+            base_skill.write_text("old\n", encoding="utf-8")
+            ledger = repository / "research/ledgers/claims.csv"
+            ledger.parent.mkdir(parents=True)
+            ledger.write_text(
+                "id,value\nC-approved,old\nC-unrelated,keep\n", encoding="utf-8"
+            )
+            subprocess.run(["git", "add", "."], cwd=repository, check=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=repository, check=True, capture_output=True)
+            base_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True
+            ).stdout.strip()
+
+            source = root / "source"
+            approved = source / "skills/explore-approaches/SKILL.md"
+            approved.parent.mkdir(parents=True)
+            approved.write_text("approved\n", encoding="utf-8")
+            body = {
+                "schema_version": "1.0",
+                "files": [
+                    {
+                        "path": "skills/explore-approaches/SKILL.md",
+                        "sha256": sha256_file(approved),
+                        "size": approved.stat().st_size,
+                    }
+                ],
+                "csv_records": [
+                    {
+                        "path": "research/ledgers/claims.csv",
+                        "record_id": "C-approved",
+                        "line": "C-approved,new",
+                        "values": ["C-approved", "new"],
+                    }
+                ],
+                "markdown_records": [],
+            }
+            manifest = {**body, "manifest_sha256": sha256_json(body)}
+            config = {
+                "promotion": {
+                    "repository_url": str(repository),
+                    "repository_slug": "owner/repository",
+                    "remote": "origin",
+                    "base_branch": "main",
+                    "feature_branch": "codex/test-ledger-recovery",
+                    "commit_message": "candidate",
+                }
+            }
+            prepared = prepare_clean_promotion(
+                source,
+                root / "run/promotion-work",
+                config,
+                manifest,
+                expected_base_commit=base_commit,
+                approval_sha256="a" * 64,
+                config_sha256=sha256_json(config),
+            )
+            clone = Path(prepared["clone"])
+            clone_ledger = clone / "research/ledgers/claims.csv"
+            clone_ledger.write_text(
+                "id,value\nC-approved,new\nC-unrelated,TAMPERED\n", encoding="utf-8"
+            )
+            subprocess.run(["git", "add", "research/ledgers/claims.csv"], cwd=clone, check=True)
+            subprocess.run(["git", "commit", "--amend", "--no-edit"], cwd=clone, check=True, capture_output=True)
+            forged = seal_record(
+                {
+                    **prepared,
+                    "head_commit": subprocess.run(
+                        ["git", "rev-parse", "HEAD"], cwd=clone, check=True, capture_output=True, text=True
+                    ).stdout.strip(),
+                    "head_tree": subprocess.run(
+                        ["git", "rev-parse", "HEAD^{tree}"], cwd=clone, check=True, capture_output=True, text=True
+                    ).stdout.strip(),
+                    "staged_paths": [
+                        "research/ledgers/claims.csv",
+                        "skills/explore-approaches/SKILL.md",
+                    ],
+                }
+            )
+            with self.assertRaisesRegex(PipelineError, "canonical approved materialization"):
+                validate_prepared_promotion(
+                    forged,
+                    root / "run",
+                    config,
+                    manifest,
+                    approval_sha256="a" * 64,
+                )
+
     def test_full_promoted_manifest_verifies_governed_ledger_records(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -330,6 +426,77 @@ class PromotionAutomationTest(unittest.TestCase):
             self.assertEqual((old / "SKILL.md").read_text(), "candidate\n")
             self.assertTrue((root / "run-fail/rollback-record.json").is_file())
 
+    def test_canary_mutation_without_previous_install_is_quarantined(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = root / "checkout/skills/explore-approaches"
+            checkout.mkdir(parents=True)
+            (checkout / "SKILL.md").write_text("candidate\n", encoding="utf-8")
+            destination = root / "root-skills/explore-approaches"
+            config = {
+                "candidate": {"skill_path": "skills/explore-approaches"},
+                "installation": {
+                    "source_mode": "local-test",
+                    "skills_root": str(root / "root-skills"),
+                    "skill_name": "explore-approaches",
+                    "backup_directory": str(root / "backups"),
+                    "quarantine_directory": str(root / "quarantine"),
+                },
+            }
+
+            def mutate_then_fail(installed: Path, *_args) -> dict:
+                (installed / "SKILL.md").write_text("mutated\n", encoding="utf-8")
+                raise PipelineError("deliberate canary mutation")
+
+            run_dir = root / "run"
+            with self.assertRaisesRegex(PipelineError, "installation rolled back"):
+                atomic_install(root / "checkout", "d" * 40, run_dir, config, canary=mutate_then_fail)
+            rollback = json.loads((run_dir / "rollback-record.json").read_text(encoding="utf-8"))
+            intent = json.loads((run_dir / "install-intent.json").read_text(encoding="utf-8"))
+            quarantine = Path(rollback["quarantine"])
+            self.assertFalse(destination.exists())
+            self.assertEqual((quarantine / "SKILL.md").read_text(encoding="utf-8"), "mutated\n")
+            self.assertFalse(rollback["restored_previous"])
+            self.assertEqual(rollback["status"], "rolled-back")
+            self.assertEqual(intent["phase"], "rolled-back")
+
+    def test_canary_mutation_restores_previous_install_after_quarantine(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = root / "checkout/skills/explore-approaches"
+            checkout.mkdir(parents=True)
+            (checkout / "SKILL.md").write_text("candidate\n", encoding="utf-8")
+            destination = root / "root-skills/explore-approaches"
+            destination.mkdir(parents=True)
+            (destination / "SKILL.md").write_text("previous\n", encoding="utf-8")
+            config = {
+                "candidate": {"skill_path": "skills/explore-approaches"},
+                "installation": {
+                    "source_mode": "local-test",
+                    "skills_root": str(root / "root-skills"),
+                    "skill_name": "explore-approaches",
+                    "backup_directory": str(root / "backups"),
+                    "quarantine_directory": str(root / "quarantine"),
+                },
+            }
+
+            def mutate_then_fail(installed: Path, *_args) -> dict:
+                (installed / "SKILL.md").write_text("mutated\n", encoding="utf-8")
+                raise PipelineError("deliberate canary mutation")
+
+            run_dir = root / "run"
+            with self.assertRaisesRegex(PipelineError, "installation rolled back"):
+                atomic_install(root / "checkout", "e" * 40, run_dir, config, canary=mutate_then_fail)
+            rollback = json.loads((run_dir / "rollback-record.json").read_text(encoding="utf-8"))
+            intent = json.loads((run_dir / "install-intent.json").read_text(encoding="utf-8"))
+            quarantine = Path(rollback["quarantine"])
+            self.assertEqual((destination / "SKILL.md").read_text(encoding="utf-8"), "previous\n")
+            self.assertEqual((quarantine / "SKILL.md").read_text(encoding="utf-8"), "mutated\n")
+            self.assertTrue(rollback["restored_previous"])
+            self.assertEqual(rollback["status"], "rolled-back")
+            self.assertEqual(intent["phase"], "rolled-back")
+            self.assertFalse(Path(intent["backup"]).exists())
+
     def test_atomic_install_recovers_after_backup_move_and_reruns_canary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -483,7 +650,15 @@ class PromotionAutomationTest(unittest.TestCase):
             holdout_path = root / "holdout-manifest.json"
             rollback_path = root / "rollback-evidence.json"
             plan_path = root / "plan.json"
-            atomic_write_json(summary_path, {"completed_at": "2026-07-29T12:00:00Z"})
+            evidence_manifest_path = root / "evidence-manifest.json"
+            atomic_write_json(evidence_manifest_path, {"schema_version": "1.0", "manifest_sha256": "f" * 64})
+            atomic_write_json(
+                summary_path,
+                {
+                    "completed_at": "2026-07-29T12:00:00Z",
+                    "evidence": {"evidence_manifest_sha256": sha256_file(evidence_manifest_path)},
+                },
+            )
             atomic_write_json(holdout_path, {"private": True})
             atomic_write_json(rollback_path, {"result": "passed"})
             body = {"schema_version": "1.0", "files": [], "csv_records": [], "markdown_records": []}
@@ -518,6 +693,7 @@ class PromotionAutomationTest(unittest.TestCase):
                 "candidate": {"name": "explore-approaches", "version": "explore-approaches-v0.1.0", "manifest_sha256": manifest["manifest_sha256"], "base_commit": "a" * 40},
                 "evidence": {
                     "evaluation_summary_sha256": sha256_file(summary_path),
+                    "evidence_manifest_sha256": sha256_file(evidence_manifest_path),
                     "holdout_manifest_sha256": sha256_file(holdout_path),
                     "protocol_sha256": "b" * 64,
                     "rubric_sha256": "c" * 64,
@@ -589,8 +765,14 @@ class PromotionAutomationTest(unittest.TestCase):
             "url": "https://github.com/example/repo/pull/1",
             "mergeCommit": {"oid": "f" * 40},
             "mergedAt": "2026-07-30T13:00:00Z",
-            "author": {"login": "automation"},
-            "reviews": [{"state": "APPROVED", "author": {"login": "reviewer"}}],
+            "author": {"login": "pull-author"},
+            "reviews": [
+                {
+                    "state": "APPROVED",
+                    "submittedAt": "2026-07-30T12:00:00Z",
+                    "author": {"login": "reviewer"},
+                }
+            ],
             "statusCheckRollup": [
                 {"__typename": "CheckRun", "name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"},
                 {"__typename": "StatusContext", "context": "policy", "state": "SUCCESS"},
@@ -601,6 +783,7 @@ class PromotionAutomationTest(unittest.TestCase):
                 "repository_slug": "example/repo",
                 "base_branch": "main",
                 "automation_actor": "automation",
+                "required_reviewer_logins": ["reviewer"],
                 "required_status_checks": ["tests", "policy"],
             }
         }
@@ -632,10 +815,58 @@ class PromotionAutomationTest(unittest.TestCase):
         with patch("automation.promotion.run_command", return_value=completed):
             with self.assertRaisesRegex(PipelineError, "required successful checks"):
                 merge_reviewed_pr(snapshot["url"], "b" * 40, unrelated_success)
-        self_reviewed = {**snapshot, "reviews": [{"state": "APPROVED", "author": {"login": "automation"}}]}
-        with patch("automation.promotion.run_command", return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(self_reviewed), stderr="")):
-            with self.assertRaises(PipelineError):
+        for rejected_login in ("untrusted-outsider", "pull-author", "automation"):
+            rejected = {
+                **snapshot,
+                "reviews": [
+                    {
+                        "state": "APPROVED",
+                        "submittedAt": "2026-07-30T12:00:00Z",
+                        "author": {"login": rejected_login},
+                    }
+                ],
+            }
+            with self.subTest(rejected_login=rejected_login):
+                with patch(
+                    "automation.promotion.run_command",
+                    return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(rejected), stderr=""),
+                ):
+                    with self.assertRaisesRegex(PipelineError, "allowed independent reviewer"):
+                        merge_reviewed_pr(snapshot["url"], "b" * 40, config)
+
+        superseded = {
+            **snapshot,
+            "reviews": [
+                {
+                    "state": "APPROVED",
+                    "submittedAt": "2026-07-30T12:00:00Z",
+                    "author": {"login": "reviewer"},
+                },
+                {
+                    "state": "CHANGES_REQUESTED",
+                    "submittedAt": "2026-07-30T12:05:00Z",
+                    "author": {"login": "reviewer"},
+                },
+            ],
+        }
+        with patch(
+            "automation.promotion.run_command",
+            return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(superseded), stderr=""),
+        ):
+            with self.assertRaisesRegex(PipelineError, "allowed independent reviewer"):
                 merge_reviewed_pr(snapshot["url"], "b" * 40, config)
+
+        placeholder_policy = {
+            **config,
+            "promotion": {
+                **config["promotion"],
+                "automation_actor": "REPLACE_WITH_AUTOMATION_ACTOR",
+                "required_reviewer_logins": ["REPLACE_WITH_INDEPENDENT_REVIEWER"],
+            },
+        }
+        with patch("automation.promotion.run_command", return_value=completed):
+            with self.assertRaisesRegex(PipelineError, "non-placeholder GitHub automation actor"):
+                merge_reviewed_pr(snapshot["url"], "b" * 40, placeholder_policy)
 
     def test_rollback_rehearsal_produces_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

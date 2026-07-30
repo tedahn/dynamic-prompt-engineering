@@ -36,7 +36,7 @@
         "skills/explore-approaches/",
         "research/evaluations/explore-approaches/"
       ],
-      "validation": "44 tests, candidate checker, model-free end-to-end run, schema parsing, compilation, credential scan, and whitespace checks passed"
+      "validation": "48 tests, candidate checker, model-free end-to-end run, schema parsing, compilation, credential scan, and whitespace checks passed"
     }
   ],
   "additional_hardening": [
@@ -73,10 +73,10 @@
       "validation": "A dependency-free package validator and three regression tests cover frontmatter and agent metadata"
     },
     {
-      "finding": "Runtime provenance, grading dimensions, promotion ancestry, and installation source custody lacked complete fixture coverage during concurrent hardening",
+      "finding": "Runtime provenance, plan and evidence bindings, grading dimensions, reviewer authorization, promotion ancestry, and installation source custody lacked complete fixture coverage during concurrent hardening",
       "severity": "P2",
       "status": "mechanically_validated_pending_exact_head_review",
-      "validation": "Runtime responses bind to frozen adapter identity; scored dimensions are explicit; merge ancestry and installation source modes fail closed; 44 lifecycle tests pass"
+      "validation": "Runtime responses bind to frozen adapter artifacts; plan and evidence manifests are canonical and hash-bound; scored dimensions are explicit; eligible reviews come from the frozen allowlist and exclude the author and automation actor; merge ancestry and installation source modes fail closed; 48 lifecycle tests pass"
     }
   ],
   "merge_readiness": {

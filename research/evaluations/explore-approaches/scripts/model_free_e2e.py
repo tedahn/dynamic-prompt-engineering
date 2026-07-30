@@ -31,6 +31,19 @@ def run(output: Path) -> dict[str, object]:
         check=False,
     )
     checks["unit_and_adversarial_tests"] = tests.returncode == 0
+    fake_adapter_evaluation = run_command(
+        [
+            sys.executable,
+            "-m",
+            "unittest",
+            str(EVALUATION_ROOT / "tests" / "test_evaluation_automation.py"),
+            "-q",
+        ],
+        cwd=REPO_ROOT,
+        timeout=120,
+        check=False,
+    )
+    checks["fake_adapter_evaluation_chain"] = fake_adapter_evaluation.returncode == 0
     compile_result = run_command(
         [sys.executable, "-m", "compileall", "-q", str(EVALUATION_ROOT / "automation"), str(EVALUATION_ROOT / "scripts")],
         cwd=REPO_ROOT,

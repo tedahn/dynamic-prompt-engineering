@@ -33,6 +33,31 @@
         "token_ratio_task_clusters": {"type": "integer", "minimum": 0}
       }
     },
-    "evidence": {"type": "object"}
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "final_grades_sha256",
+        "human_review_sha256",
+        "holdout_manifest_sha256",
+        "blind_packet_sha256",
+        "blind_map_sha256",
+        "evidence_manifest_sha256"
+      ],
+      "properties": {
+        "final_grades_sha256": {"$ref": "#/$defs/sha256"},
+        "human_review_sha256": {"$ref": "#/$defs/sha256"},
+        "holdout_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "blind_packet_sha256": {"$ref": "#/$defs/sha256"},
+        "blind_map_sha256": {"$ref": "#/$defs/sha256"},
+        "evidence_manifest_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
   }
 }

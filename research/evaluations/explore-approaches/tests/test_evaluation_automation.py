@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from automation.core import PipelineError, assess_summary, atomic_write_json, build_candidate_manifest, load_json, sha256_file, sha256_json
-from automation.evaluation import _computed_grade_score, build_blind_bundle, build_holdout_manifest_template, build_summary, freeze_plan, holdout_manifest_payload, invoke_adapter, read_jsonl, run_subjects, write_jsonl
+from automation.evaluation import _computed_grade_score, build_blind_bundle, build_holdout_manifest_template, build_summary, freeze_plan, holdout_manifest_payload, invoke_adapter, read_jsonl, run_provisional_grading, run_subjects, write_jsonl
 
 
 FAKE_ADAPTER = r'''from __future__ import annotations
@@ -137,13 +137,16 @@ class EvaluationAutomationTest(unittest.TestCase):
                     "blind_seed": 2,
                     "bootstrap_seed": 3,
                     "bootstrap_resamples": 200,
-                    "subject_adapter_argv": [sys.executable, str(adapter), "{input}", "{output}"],
+                    "subject_adapter_argv": [str(Path(sys.executable).resolve()), str(adapter), "{input}", "{output}"],
                     "subject_runtime": {
                         "adapter_id": "synthetic-subject-adapter",
                         "provider_id": "synthetic-provider",
                         "model_id": "synthetic-model",
                         "settings": {"temperature": 0},
+                        "artifact_paths": [str(adapter)],
                     },
+                    "grader_replicates": 2,
+                    "grader_adapter_argv": [sys.executable, str(adapter), "{input}", "{output}"],
                     "timeout_ms": 10000,
                     "max_transient_retries": 2,
                     "thresholds": {
@@ -272,6 +275,17 @@ class EvaluationAutomationTest(unittest.TestCase):
             self.assertEqual(verified, ["HM-synthetic-001", "HM-synthetic-001"])
             self.assertEqual((run / "holdout-manifest.json").read_bytes(), source_manifest_bytes)
             self.assertEqual(len(plan["cells"]), 144)
+            self.assertEqual(plan["plan_design_sha256"], holdout_template["plan_design_sha256"])
+            plan_bytes = (run / "plan.json").read_bytes()
+            tampered_plan = load_json(run / "plan.json")
+            tampered_plan["cells"][0]["domain"] = "forged-domain"
+            tampered_plan["plan_sha256"] = sha256_json(
+                {key: value for key, value in tampered_plan.items() if key != "plan_sha256"}
+            )
+            atomic_write_json(run / "plan.json", tampered_plan)
+            with self.assertRaisesRegex(PipelineError, "signed deterministic design"):
+                run_subjects(repo, run, config)
+            (run / "plan.json").write_bytes(plan_bytes)
             first = run_subjects(repo, run, config)
             self.assertEqual(first, {"completed": 144, "failed": 0, "resumed": 0})
             second = run_subjects(repo, run, config)
@@ -301,6 +315,33 @@ class EvaluationAutomationTest(unittest.TestCase):
             self.assertEqual(bundle["records"], 36)
             self.assertEqual(bundle["candidates"], 144)
             self.assertTrue(all("arm" not in candidate for packet in read_jsonl(run / "grading/blind-packet.jsonl") for candidate in packet["candidates"]))
+            first_grading = run_provisional_grading(run, config)
+            self.assertEqual(first_grading, {"grades": 72, "failures": 0, "resumed": 0})
+            second_grading = run_provisional_grading(run, config)
+            self.assertEqual(second_grading, {"grades": 72, "failures": 0, "resumed": 72})
+            provisional = read_jsonl(run / "grading/provisional-grades.jsonl")
+            self.assertTrue(
+                all(
+                    row["packet_id"] and row["plan_sha256"] == plan["plan_sha256"]
+                    and row["blind_packet_sha256"] == bundle["packet_sha256"]
+                    and "blind_id" not in row
+                    for row in provisional
+                )
+            )
+            provisional_target = (
+                run / "grading" / "provisional" / provisional[0]["packet_id"]
+                / f"replicate-{provisional[0]['replicate']}.json"
+            )
+            provisional_bytes = provisional_target.read_bytes()
+            tampered_provisional = load_json(provisional_target)
+            tampered_provisional["plan_sha256"] = "0" * 64
+            tampered_provisional["result_sha256"] = sha256_json(
+                {key: value for key, value in tampered_provisional.items() if key != "result_sha256"}
+            )
+            atomic_write_json(provisional_target, tampered_provisional)
+            with self.assertRaisesRegex(PipelineError, "not bound to its packet and plan"):
+                run_provisional_grading(run, config)
+            provisional_target.write_bytes(provisional_bytes)
 
             grades = []
             mappings_by_packet = {}
@@ -340,17 +381,40 @@ class EvaluationAutomationTest(unittest.TestCase):
             atomic_write_json(
                 review,
                 {
-                    "schema_version": "1.0",
+                    "schema_version": "2.0",
                     "reviewer": "Named Human",
                     "completed_at": "2026-07-30T12:00:00Z",
                     "grades_sha256": sha256_file(final_grades),
+                    "plan_sha256": plan["plan_sha256"],
+                    "blind_packet_sha256": bundle["packet_sha256"],
+                    "rubric_sha256": plan["rubric_sha256"],
                     "human_final": True,
                     "adjudication_complete": True,
                     "integrity_valid": True,
                     "contamination_detected": False,
                 },
             )
+            packet_path = run / "grading/blind-packet.jsonl"
+            packet_bytes = packet_path.read_bytes()
+            tampered_packets = read_jsonl(packet_path)
+            tampered_packets[0]["candidates"][0]["output"] = {"text": "forged blind output"}
+            write_jsonl(packet_path, tampered_packets)
+            with self.assertRaisesRegex(PipelineError, "Blind packet differs from deterministic reconstruction"):
+                build_summary(run, config, final_grades, review)
+            packet_path.write_bytes(packet_bytes)
+            map_path = run / "private/blind-map.jsonl"
+            map_bytes = map_path.read_bytes()
+            tampered_map = read_jsonl(map_path)
+            tampered_map[0]["arm"] = "B00_RAW" if tampered_map[0]["arm"] != "B00_RAW" else "C01_EXPLORE"
+            write_jsonl(map_path, tampered_map)
+            with self.assertRaisesRegex(PipelineError, "Private blind map differs from deterministic reconstruction"):
+                build_summary(run, config, final_grades, review)
+            map_path.write_bytes(map_bytes)
             summary = build_summary(run, config, final_grades, review)
+            evidence_manifest = load_json(run / "evidence-manifest.json")
+            self.assertEqual(len(evidence_manifest["cells"]), 144)
+            self.assertTrue(all(cell["attempts"] for cell in evidence_manifest["cells"]))
+            self.assertEqual(summary["evidence"]["evidence_manifest_sha256"], sha256_file(run / "evidence-manifest.json"))
             self.assertEqual(assess_summary(summary, config)["classification"], "promotable")
 
 
