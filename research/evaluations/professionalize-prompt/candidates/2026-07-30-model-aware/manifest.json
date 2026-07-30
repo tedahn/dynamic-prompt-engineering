@@ -1,0 +1,20 @@
+{
+  "candidate_id": "professionalize-prompt-model-aware@2026-07-30",
+  "status": "prototype-unscored",
+  "created_at": "2026-07-30",
+  "base_snapshot_id": "professionalize-prompt@2026-07-28-eec246d1",
+  "skill_path": "skills/professionalize-prompt",
+  "source_provenance": "Local installed professionalize-prompt skill copied on 2026-07-30; installation is not tracked by this repository.",
+  "behavioral_efficacy": null,
+  "promotion_authorized": false,
+  "files": {
+    "SKILL.md": "b201759f54142e985f320b5b42f6826fac5ce24018708d7bc950db7a8f1dccee",
+    "agents/openai.yaml": "33527f22640ed8918e5a16be687cad7ba298cab3fc1ffba1e380465510459ec5",
+    "references/gpt-5p6-sol-prompting.md": "9e61f4369d741fdfe7db3a64cd538a6058200704d21e78ee0b4e5445763a5409",
+    "references/model-capability-routing-and-evaluation.md": "71e37592f6e5f7cf9c9b097e5e5201099f9d1fa4ccc692e31090babc438952e3"
+  },
+  "evaluation_case_ids": [
+    "E-020"
+  ],
+  "rollback": "Restore professionalize-prompt@2026-07-28-eec246d1; this repository candidate is not installed or promoted."
+}
