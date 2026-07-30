@@ -188,6 +188,8 @@ def validate(repo_root: Path) -> dict[str, Any]:
         "automation_orchestrator": repo_root / "research/evaluations/explore-approaches/automation/orchestrator.py",
         "automation_cli": repo_root / "research/evaluations/explore-approaches/scripts/automate_lifecycle.py",
         "automation_e2e": repo_root / "research/evaluations/explore-approaches/scripts/model_free_e2e.py",
+        "automation_e2e_regression": repo_root
+        / "research/evaluations/explore-approaches/tests/test_model_free_e2e.py",
         "automation_spec": repo_root / "research/evaluations/explore-approaches/AUTOMATION_SPEC.md",
         "automation_runbook": repo_root / "research/evaluations/explore-approaches/AUTOMATION_RUNBOOK.md",
         "workflow": repo_root / ".github/workflows/explore-approaches-validation.yml",

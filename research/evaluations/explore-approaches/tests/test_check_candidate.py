@@ -18,6 +18,7 @@ class CandidateContractTest(unittest.TestCase):
         result = CHECKER.validate(REPO_ROOT)
         self.assertTrue(result["ok"], result["errors"])
         self.assertEqual(result["fixture_count"], 8)
+        self.assertIn("automation_e2e_regression", result["hashes"])
 
     def test_duplicate_fixture_ids_fail(self) -> None:
         row = {
