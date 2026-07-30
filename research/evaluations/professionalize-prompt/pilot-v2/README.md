@@ -12,6 +12,14 @@ The pilot is intentionally diagnostic. It tests execution plumbing, mode routing
 
 All arms use a fresh ephemeral process and the same requested model alias and reasoning setting. User configuration, project rules, plugins, memories, and unrelated skills are excluded through an isolated `CODEX_HOME` and CLI feature controls. Workspace-tool cases run only against per-cell copies of synthetic fixtures.
 
+## Execution safety
+
+- `preflight` and `run` take an exclusive lock for the frozen run directory, so two processes cannot invoke the same provider cell concurrently.
+- Every provider call is preceded by a durable `pending-invocation.json` record and `in_progress` cell metadata. If the process exits before the outcome is sealed, resume changes the cell to `reconciliation_required` and makes no replacement call.
+- A scored run recomputes the three discarded preflight rows, manifest counts, cell identities, prompt hashes, attempt ledgers, workspace trees, and artifact hashes. A status string alone cannot open the scored gate.
+- Completed preflight and scored phases seal the ordered cell-metadata hashes in the run manifest. Resume and grading both reject stale seals, rehashed artifact forgery, malformed attempt ledgers, and evidence directories that escape through symlinks.
+- Reconciliation is intentionally manual; the runner has no automatic replay path for an ambiguous provider outcome.
+
 ## Evidence states
 
 - Deterministic checks and traces may be final when the adapter is executable.

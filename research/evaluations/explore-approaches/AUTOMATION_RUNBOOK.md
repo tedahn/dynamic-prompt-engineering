@@ -9,10 +9,12 @@ Copy `config/pipeline-v1.json` to a private configuration file and set:
 - `evaluation.subject_adapter_argv`, `grader_adapter_argv`, and `canary_adapter_argv`, using `{input}` and `{output}` as whole argv elements, plus an absolute non-symlink `canary_entrypoint_path` and absolute `canary_dependency_paths`;
 - `evaluation.subject_runtime`, naming the exact adapter, provider, model, settings, absolute non-symlink `entrypoint_path`, and absolute `dependency_paths` used for every matched subject cell;
 - `evaluation.adapter_env_allowlist`, containing only environment variables required by those adapters;
+- `roles`, resolving unique identities for candidate author, holdout owner, human reviewer/adjudicator, provider-execution approver, promotion owner, automation actor, and PR reviewer;
 - `holdout_verification.allowed_signers_path` and `expected_identity` for the named holdout owner;
 - `human_review_verification.allowed_signers_path` and `expected_identity` for the named final reviewer;
+- `execution_verification.allowed_signers_path` and `expected_identity` plus bounded `provider_execution_limits` for the separate provider-execution approver;
 - `approval_verification.allowed_signers_path` and `expected_identity`;
-- the GitHub repository, protected base branch, feature branch, exact required-check identities, non-placeholder `promotion.automation_actor`, a non-empty `promotion.required_reviewer_logins` allowlist, an absolute system `skill-installer` helper with `installer_dependency_paths`, an absolute validator entrypoint with `validator_dependency_paths`, root-skill paths, and a non-empty canary validator.
+- the GitHub repository, protected base branch, feature branch, exact required-check identities, non-placeholder `promotion.automation_actor`, a non-empty `promotion.required_reviewer_logins` allowlist, an absolute system `skill-installer` helper with `installer_dependency_paths` and `installer_env_allowlist`, an absolute validator entrypoint with `validator_dependency_paths` and `validator_env_allowlist`, root-skill paths, and a non-empty canary validator.
 
 Keep credentials, the live configuration and signer trust files, private holdout tasks, raw outputs, grades, and the run directory outside this repository. The run root and every persisted private directory must be caller-owned mode `0700`; private files, SQLite state, JSONL, and adapter-produced files must be caller-owned regular non-symlinks at mode `0600`. Creation normalizes adapter output under a restrictive contract, while resume rejects ownership or mode drift. This is the local multi-user threat boundary: group/world-readable run artifacts are invalid even when their hashes still match.
 
@@ -57,7 +59,35 @@ python research/evaluations/explore-approaches/scripts/automate_lifecycle.py \
 
 The signed manifest, run directory, and blinding key are a one-run/one-key set. Reuse the same `--run-dir` for freeze, execution, grading, summary, approval, and recovery. Losing or replacing the key, using the signed manifest with another run directory, or changing any committed input requires a newly templated and newly signed run. Public-seed runs and artifacts created before this contract are incompatible and must not be migrated or resumed as evidence.
 
-The command then freezes the plan, executes 144 matched cells, and derives opaque packet IDs, candidate IDs, candidate order, and packet order with domain-separated HMAC-SHA-256. It writes the public packet to `grading/blind-packet.jsonl` and retains the key and arm mapping under `private/grading/`. The evidence manifest records the private map as `private/grading/blind-map.jsonl` with its SHA-256. The summary evidence and signed promotion approval each carry that explicit `blind_map_path` and `blind_map_sha256`; their `evidence_manifest_sha256` remains the canonical graph root. Preserve the key and map until the run and its promotion or rejection audit are complete; never give their paths, contents, or evidence-manifest linkage to a grader.
+The first command freezes the plan and stops without a provider call. It writes `execution-authorization.unsigned.json`. The distinct provider-execution approver sets a post-freeze time and bounded expiry, may lower (never raise) the configured call/retry/token limits, signs the canonical payload in the `codex-skill-provider-execution` namespace, and attaches the signature:
+
+```sh
+python research/evaluations/explore-approaches/scripts/automate_lifecycle.py \
+  --config /private/path/pipeline.json \
+  execution-authorization-payload \
+  --authorization /private/path/explore-run/execution-authorization.unsigned.json \
+  --output /private/path/execution-authorization.payload.json
+
+ssh-keygen -Y sign \
+  -f /private/path/provider-execution-key \
+  -n codex-skill-provider-execution \
+  /private/path/execution-authorization.payload.json
+
+python research/evaluations/explore-approaches/scripts/automate_lifecycle.py \
+  attach-signature \
+  --document /private/path/explore-run/execution-authorization.unsigned.json \
+  --signature /private/path/execution-authorization.payload.json.sig \
+  --output /private/path/execution-authorization.signed.json
+
+python research/evaluations/explore-approaches/scripts/automate_lifecycle.py \
+  --config /private/path/pipeline.json \
+  auto \
+  --run-dir /private/path/explore-run \
+  --execution-authorization /private/path/execution-authorization.signed.json \
+  --execute
+```
+
+Only the final command executes the 144 matched cells. Each provider attempt is durably reserved before the call and conservatively charges the signed per-call token bound; missing or excessive telemetry blocks the result. The process derives opaque packet IDs, candidate IDs, candidate order, and packet order with domain-separated HMAC-SHA-256. It writes the public packet to `grading/blind-packet.jsonl` and retains the key and arm mapping under `private/grading/`. The evidence manifest records the private map as `private/grading/blind-map.jsonl` with its SHA-256. The summary evidence and signed promotion approval each carry that explicit `blind_map_path` and `blind_map_sha256`; their `evidence_manifest_sha256` remains the canonical graph root. Preserve the key and map until the run and its promotion or rejection audit are complete; never give their paths, contents, or evidence-manifest linkage to a grader.
 
 Optional model grades are provisional and can never make a run promotable. For human-final grading, export only `grading/blind-packet.jsonl` plus the frozen rubric to a reviewer environment that has no run-directory or `private/` access. Create the final grade and review artifacts using `schemas/grade-record.schema.json` and `schemas/human-review.schema.json`. The review must bind the exact public blind-packet SHA-256 and final-grades SHA-256, and carry a detached OpenSSH signature whose identity exactly matches `reviewer` and `human_review_verification.expected_identity` in the `codex-skill-human-review` namespace, before the private map is used to construct the summary.
 
@@ -94,7 +124,9 @@ python research/evaluations/explore-approaches/scripts/automate_lifecycle.py \
   --config /private/path/pipeline.json \
   auto \
   --run-dir /private/path/explore-run \
+  --execution-authorization /private/path/provider-execution-authorization.signed.json \
   --approval /private/path/promotion-approval.signed.json \
+  --execute \
   --apply \
   --poll-seconds 30 \
   --max-review-wait-seconds 3600
@@ -102,10 +134,26 @@ python research/evaluations/explore-approaches/scripts/automate_lifecycle.py \
 
 The command prepares a clean commit at the exact signed base SHA, resolves `gh api user` in the same ambient credential context, and requires that login to match the frozen `automation_actor` case-insensitively before every push, PR recovery, and merge. Pushes are never forced. Immutable PR and release receipts retain the verified login. Recovery revalidates clone origin, branch, ancestry, clean tree, exact diff, manifest, approval, configuration, and actor bindings. It requires an unchanged head, the configured base, a current GitHub approval from an exact login in the frozen reviewer allowlist whose reviewed commit equals that exact head, `CLEAN` merge state, and every exact configured check; the PR author and verified automation actor cannot satisfy review. Release recovery re-queries GitHub and reconciles a canonical receipt. It then verifies the complete promoted manifest, invokes the configured system installer at the exact merge SHA into isolated staging, verifies the downloaded subtree, swaps it atomically, and activates only after the fresh-process canary explicitly passes. Failure quarantines the candidate and restores the verified prior root skill; active recovery revalidates signed approval, receipts, event bindings, and the installed tree.
 
-PR, release, install-intent, canary, installation, quarantine, and rollback records are sealed and hash-bound to lifecycle events. Rerunning the same command resumes `frozen`, `promotable`, `promoting`, `pr-open`, `merged`, `installing`, or `canary` without trusting a pre-existing receipt; root installation uses an exclusive lock and reconciles filesystem hashes before proceeding.
+PR, release, install-intent, canary, installation, quarantine, active-rollback intent, rollback-canary, and rollback records are sealed and hash-bound to lifecycle events. Rerunning the same command resumes `frozen`, `running`, `promotable`, `promoting`, `pr-open`, `merged`, `installing`, `canary`, or operational rollback without trusting a pre-existing receipt; root mutation uses an exclusive lock and reconciles filesystem hashes before proceeding. Installer and validator subprocesses receive only their explicit environment allowlists and never inherit the ambient credential environment.
+
+## 5. Operational rollback after activation
+
+Use the frozen promotion owner identity and a concrete incident reason. The command is inert without `--apply`:
+
+```sh
+python research/evaluations/explore-approaches/scripts/automate_lifecycle.py \
+  --config /private/path/pipeline.json \
+  rollback-active \
+  --run-dir /private/path/explore-run \
+  --operator exact-promotion-owner-identity \
+  --reason "material post-activation regression in guarded task class" \
+  --apply
+```
+
+The command verifies the completed install receipt and active hashes, writes a durable sealed intent, atomically moves the active candidate into the configured quarantine, restores the sealed predecessor (or leaves the skill absent), runs a fresh credential-minimized rollback canary, and seals the operator, reason, receipt hashes, candidate hashes, predecessor hashes, and rollback-canary hash. A crash at any mutation boundary resumes from filesystem hashes under the same exclusive lock.
 
 Use `status --run-dir /private/path/explore-run` to audit the hash chain. Exit `0` means the requested stage completed; `10` means a conclusive non-promotion outcome; `20` means an expected evidence or human gate; `2` means a configuration, integrity, or external failure.
 
 ## Current non-readiness
 
-The repository configuration intentionally contains empty live adapter argv, signer path, and signer identity plus placeholder GitHub automation and reviewer logins. No fresh private holdout, human-final review, signed approval, reviewed PR, live merge, or production root install has been performed.
+The repository configuration intentionally contains empty live adapter argv and signer trust plus distinct non-live role, GitHub automation, and reviewer placeholders. No fresh private holdout, signed provider-execution authorization, provider call, human-final review, signed promotion approval, reviewed PR, live merge, production root install, or operational active rollback has been performed.

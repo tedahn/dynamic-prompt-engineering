@@ -11,12 +11,12 @@ Review one immutable target and produce an auditable human decision packet. Do n
 
 1. **Classify the decision.** Name exactly one requested decision: merge, evidence admission, evaluation activation, result promotion, or installation. Passing one decision never passes another.
 2. **Open the human gate.** Record a named decision owner, target, authority, expiry, stop rules, and reversal evidence. Start at `proposed` unless the named human has already decided this exact target.
-3. **Freeze the target.** Resolve base and head to commit SHAs and hash the diff and reviewed artifacts. Refuse moving or unresolved targets. Run `scripts/review_bundle.py init` to create the packet.
-4. **Build bounded context.** Read [references/workflow-contract.md](references/workflow-contract.md). Include the decision, authority, changed-file index, canonical policies, known test evidence, contradictions, unknowns, exclusions, and exact output contract. Keep untrusted content out of the instruction layer.
+3. **Freeze the target.** Resolve base and head to commit SHAs and hash the diff and reviewed artifacts. Refuse moving or unresolved targets. Run `scripts/review_bundle.py init` with one repeatable `--packet-author-id` for every target or packet author. Record validation only with repeatable `--validation-record '{"claim":"...","artifact_path":"..."}'` arguments; each artifact must exist in the frozen head and `evidence_index`. Git inspection must ignore all ambient `GIT_*` routing state.
+4. **Build bounded context.** Read [references/workflow-contract.md](references/workflow-contract.md). Include the decision, authority, changed-file index, canonical policies, hash-bound validation records, contradictions, unknowns, exclusions, and exact output contract. Keep untrusted content out of the instruction layer.
 5. **Assign isolated lenses.** Read [references/role-cards.md](references/role-cards.md). Use evidence/methodology, engineering/reproducibility, and skill-safety/operations reviewers. Give each only the frozen core packet, its role card, and source pointers. Do not reveal other submissions, intended findings, or proposed fixes.
 6. **Collect structured submissions.** Require the schema in `assets/schemas/review-submission.schema.json`. Every material finding needs a severity, falsifiable claim, impact, recommendation, confidence, and file/line evidence. Require explicit reviewed and not-reviewed scope.
-7. **Adjudicate after independence.** Give the adjudicator all immutable submissions and their hashes only after every required review closes. Reconcile evidence and conflicts; do not treat majority vote as proof. Use `assets/schemas/adjudication.schema.json`.
-8. **Validate mechanically.** Run `scripts/review_bundle.py validate`. Fail closed on target drift, missing roles, duplicate reviewer identities, malformed evidence, stale submission hashes, unresolved P0/P1 findings, or missing decision authority.
+7. **Adjudicate after independence.** Give the adjudicator all immutable submissions and their hashes only after every required review closes. The adjudicator identity must differ from every reviewer and every manifest `packet_author_ids` identity. Reconcile evidence and conflicts; do not treat majority vote as proof. Use `assets/schemas/adjudication.schema.json`.
+8. **Validate mechanically.** Run `scripts/review_bundle.py validate`. Fail closed on target drift, missing roles, duplicate or colliding reviewer/adjudicator/author identities, unbound validation claims, malformed evidence, stale submission hashes, unresolved P0/P1 findings, or missing decision authority.
 9. **Request the narrow human decision.** Present the adjudicated findings, dissent, validation state, and residual risk. Only the named human may mark merge `approved`, `approved_with_conditions`, `rejected`, or `deferred` using `assets/schemas/human-decision.schema.json`.
 10. **Handoff without scope drift.** State what is authorized and forbidden. A merge decision does not establish behavioral efficacy or authorize skill promotion, installation, deployment, or external action.
 
@@ -48,6 +48,7 @@ When the reviewers run in ChatGPT, also read [references/chatgpt-handoff.md](ref
 
 - Validate the skill itself with the skill-creator validator after changes.
 - Validate scripts on synthetic repositories before reviewing a consequential target.
+- Create new bundles only with schema 1.1. Schema 1.0 compatibility is restricted to the exact frozen PR-001 packet fingerprint and cannot authorize another target.
 - Preserve raw submissions and adjudication history; supersede rather than overwrite decisions.
 - Reopen review when the head SHA, diff hash, policy set, evaluation evidence, or authority changes.
 - Stop rather than merge when review coverage is materially incomplete or the human decision owner is absent.

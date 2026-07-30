@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import difflib
+import fcntl
 import hashlib
 import json
 import os
@@ -20,6 +22,7 @@ import random
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -213,6 +216,11 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        directory_descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -229,6 +237,52 @@ def atomic_write_json(path: Path, value: Any) -> None:
 def atomic_write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
     material = b"".join(canonical_json_bytes(row) for row in rows)
     atomic_write_bytes(path, material)
+
+
+@contextmanager
+def exclusive_run_lock(run_dir: Path) -> Iterable[Path]:
+    """Prevent concurrent provider execution for one frozen run directory."""
+    if run_dir.is_symlink():
+        raise PilotError(f"Run directory must not be a symlink: {run_dir}")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = run_dir / ".execution.lock"
+    flags = (
+        os.O_CREAT
+        | os.O_RDWR
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise PilotError(f"Unsafe or inaccessible run lock: {lock_path}") from exc
+    try:
+        lock_stat = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(lock_stat.st_mode)
+            or lock_stat.st_uid != os.geteuid()
+            or lock_stat.st_nlink != 1
+        ):
+            raise PilotError(f"Run lock is not a regular file: {lock_path}")
+        os.fchmod(descriptor, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise PilotError(f"Run directory is already executing: {run_dir}") from exc
+        os.ftruncate(descriptor, 0)
+        os.write(
+            descriptor,
+            canonical_json_bytes(
+                {"pid": os.getpid(), "acquired_at": utc_now(), "run_dir": str(run_dir.resolve())}
+            ),
+        )
+        os.fsync(descriptor)
+        yield lock_path
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
 
 def load_pilot_inputs() -> PilotInputs:
@@ -1208,6 +1262,7 @@ CELL_ARTIFACT_FILES = {
 ATTEMPT_ARTIFACT_FILES = {
     key: value for key, value in CELL_ARTIFACT_FILES.items() if key != "prompt_sha256"
 }
+ATTEMPT_ARTIFACT_FILES["invocation_intent_sha256"] = "invocation-intent.json"
 
 
 def _file_hashes(cell_dir: Path) -> dict[str, str]:
@@ -1222,6 +1277,9 @@ def _file_hashes(cell_dir: Path) -> dict[str, str]:
 
 def verify_cell_artifacts(cell_dir: Path, metadata: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    pending_intent = cell_dir / "pending-invocation.json"
+    if pending_intent.exists():
+        errors.append(f"{cell_dir.name} has an unresolved provider invocation")
     expected = metadata.get("hashes", {})
     for key, name in CELL_ARTIFACT_FILES.items():
         path = cell_dir / name
@@ -1233,11 +1291,39 @@ def verify_cell_artifacts(cell_dir: Path, metadata: dict[str, Any]) -> list[str]
     if not isinstance(attempts, list) or metadata.get("attempt_count") != len(attempts):
         errors.append(f"{cell_dir.name} attempt ledger mismatch")
         attempts = []
+    if not attempts:
+        errors.append(f"{cell_dir.name} has no completed provider attempt")
+    if metadata.get("retry_count") != max(0, len(attempts) - 1):
+        errors.append(f"{cell_dir.name} retry count mismatch")
+    max_retries = metadata.get("max_retries")
+    if not isinstance(max_retries, int) or max_retries < 0 or len(attempts) > max_retries + 1:
+        errors.append(f"{cell_dir.name} retry budget mismatch")
+    attempt_root = cell_dir / "attempts"
+    expected_attempt_names = [f"attempt-{number:02d}" for number in range(1, len(attempts) + 1)]
+    if attempt_root.is_symlink() or not attempt_root.is_dir():
+        errors.append(f"{cell_dir.name} attempt directory is missing or unsafe")
+    else:
+        actual_attempt_names = sorted(path.name for path in attempt_root.iterdir())
+        if actual_attempt_names != expected_attempt_names:
+            errors.append(f"{cell_dir.name} attempt directory membership mismatch")
     for expected_number, attempt in enumerate(attempts, 1):
         if not isinstance(attempt, dict) or attempt.get("attempt") != expected_number:
             errors.append(f"{cell_dir.name} invalid attempt record {expected_number}")
             continue
+        if attempt.get("status") not in {"completed", "transient_failed", "permanent_failed"}:
+            errors.append(f"{cell_dir.name} invalid attempt status {expected_number}")
+        if expected_number < len(attempts) and attempt.get("status") != "transient_failed":
+            errors.append(f"{cell_dir.name} non-transient attempt was retried")
         attempt_dir = cell_dir / "attempts" / f"attempt-{expected_number:02d}"
+        try:
+            resolved_attempt_dir = attempt_dir.resolve(strict=True)
+            resolved_attempt_dir.relative_to(attempt_root.resolve(strict=True))
+        except (FileNotFoundError, ValueError):
+            errors.append(f"{cell_dir.name} attempt {expected_number} escapes its evidence root")
+            continue
+        if attempt_dir.is_symlink() or not resolved_attempt_dir.is_dir():
+            errors.append(f"{cell_dir.name} attempt {expected_number} directory is unsafe")
+            continue
         hashes = attempt.get("hashes", {})
         for key, name in ATTEMPT_ARTIFACT_FILES.items():
             path = attempt_dir / name
@@ -1258,6 +1344,30 @@ def verify_cell_artifacts(cell_dir: Path, metadata: dict[str, Any]) -> list[str]
                 errors.append(
                     f"{cell_dir.name} attempt {expected_number} workspace snapshot drift"
                 )
+    if attempts:
+        final_attempt = attempts[-1]
+        final_attempt_status = final_attempt.get("status") if isinstance(final_attempt, dict) else None
+        metadata_status = metadata.get("status")
+        if metadata_status == "completed" and final_attempt_status != "completed":
+            errors.append(f"{cell_dir.name} completed status disagrees with final attempt")
+        if metadata_status == "transient_failed" and final_attempt_status != "transient_failed":
+            errors.append(f"{cell_dir.name} transient status disagrees with final attempt")
+        if metadata_status == "permanent_failed" and not (
+            final_attempt_status == "permanent_failed"
+            or (
+                final_attempt_status == "transient_failed"
+                and isinstance(max_retries, int)
+                and len(attempts) == max_retries + 1
+            )
+        ):
+            errors.append(f"{cell_dir.name} permanent status disagrees with final attempt")
+        if metadata.get("completed_at") != final_attempt.get("completed_at"):
+            errors.append(f"{cell_dir.name} completion timestamp disagrees with final attempt")
+        if metadata.get("workspace") != final_attempt.get("workspace"):
+            errors.append(f"{cell_dir.name} final workspace metadata mismatch")
+        for key in ATTEMPT_ARTIFACT_FILES:
+            if metadata.get("hashes", {}).get(key) != final_attempt.get("hashes", {}).get(key):
+                errors.append(f"{cell_dir.name} final artifact hash mismatch: {key}")
     workspace = NO_TOOL_CWD if metadata.get("tool_policy") == "none" else cell_dir / "workspace"
     if not workspace.is_dir():
         errors.append(f"{cell_dir.name} final workspace is missing")
@@ -1283,10 +1393,39 @@ def execute_cell(
     cell_dir = run_dir / row["cell_dir"]
     cell_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = cell_dir / "metadata.json"
+    pending_intent_path = cell_dir / "pending-invocation.json"
     existing: dict[str, Any] | None = load_json(metadata_path) if metadata_path.is_file() else None
+    if pending_intent_path.exists() and existing is None:
+        if pending_intent_path.is_symlink() or not pending_intent_path.is_file():
+            raise PilotError(f"Unsafe pending invocation record: {pending_intent_path}")
+        pending = load_json(pending_intent_path)
+        existing = {
+            "schema_version": SCHEMA_VERSION,
+            "run_id": row["run_id"],
+            "phase": row["phase"],
+            "discarded": row["discarded"],
+            "cell_id": row["cell_id"],
+            "fixture_id": row["fixture_id"],
+            "workflow_id": row["workflow_id"],
+            "trial": row["trial"],
+            "status": "reconciliation_required",
+            "attempt_count": 0,
+            "attempts": [],
+            "pending_attempt": pending,
+            "error": {"kind": "ambiguous_provider_outcome"},
+        }
+        atomic_write_json(metadata_path, existing)
     if existing:
         if existing.get("cell_id") != row["cell_id"]:
             raise PilotError(f"Cell metadata identity mismatch: {cell_dir}")
+        if existing.get("status") in {"in_progress", "reconciliation_required"} or pending_intent_path.exists():
+            existing["status"] = "reconciliation_required"
+            existing["error"] = {"kind": "ambiguous_provider_outcome"}
+            existing["updated_at"] = utc_now()
+            atomic_write_json(metadata_path, existing)
+            raise PilotError(
+                f"Cell {row['cell_id']} has an ambiguous provider outcome; reconcile it before resume"
+            )
         if existing.get("status") == "completed":
             artifact_errors = verify_cell_artifacts(cell_dir, existing)
             if artifact_errors:
@@ -1340,6 +1479,47 @@ def execute_cell(
                 runtime_root,
                 temporary_dir=temp_dir,
                 tool_readable_roots=(workspace, temp_dir),
+            )
+            invocation_started_at = utc_now()
+            invocation_intent = {
+                "schema_version": SCHEMA_VERSION,
+                "record_type": "provider-invocation-intent",
+                "status": "pending",
+                "run_id": row["run_id"],
+                "phase": row["phase"],
+                "discarded": row["discarded"],
+                "cell_id": row["cell_id"],
+                "attempt": attempt_number,
+                "created_at": invocation_started_at,
+                "prompt_sha256": prompt_hash,
+                "command_sha256": sha256_bytes(canonical_json_bytes(command)),
+                "environment_keys": sorted(environment),
+                "timeout_seconds": timeout_seconds,
+            }
+            atomic_write_json(attempt_dir / "invocation-intent.json", invocation_intent)
+            atomic_write_json(pending_intent_path, invocation_intent)
+            atomic_write_json(
+                metadata_path,
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "run_id": row["run_id"],
+                    "phase": row["phase"],
+                    "discarded": row["discarded"],
+                    "cell_id": row["cell_id"],
+                    "blind_id": row.get("blind_id"),
+                    "fixture_id": row["fixture_id"],
+                    "workflow_id": row["workflow_id"],
+                    "trial": row["trial"],
+                    "status": "in_progress",
+                    "started_at": overall_started,
+                    "completed_at": None,
+                    "attempt_count": len(attempts),
+                    "attempts": attempts,
+                    "pending_attempt": invocation_intent,
+                    "requested_model": REQUESTED_MODEL,
+                    "reasoning_effort": REASONING_EFFORT,
+                    "tool_policy": row["tool_policy"],
+                },
             )
             invocation = _invoke_cli(
                 command,
@@ -1399,6 +1579,18 @@ def execute_cell(
                 shutil.rmtree(workspace_snapshot)
             shutil.copytree(workspace, workspace_snapshot, symlinks=True)
 
+        sealed_intent = {
+            **invocation_intent,
+            "status": "sealed",
+            "sealed_at": utc_now(),
+            "provider_started_at": invocation["started_at"],
+            "provider_completed_at": invocation["completed_at"],
+            "cli_exit_code": invocation["exit_code"],
+            "raw_events_sha256": sha256_file(attempt_dir / "raw-events.jsonl"),
+            "stderr_sha256": sha256_file(attempt_dir / "stderr.txt"),
+        }
+        atomic_write_json(attempt_dir / "invocation-intent.json", sealed_intent)
+
         top_hashes = _file_hashes(cell_dir)
         attempt_hashes = {
             key: sha256_file(attempt_dir / name)
@@ -1410,8 +1602,12 @@ def execute_cell(
                 "workspace_before_sha256": "workspace-before.json",
                 "workspace_after_sha256": "workspace-after.json",
                 "workspace_diff_sha256": "workspace.diff",
+                "invocation_intent_sha256": "invocation-intent.json",
             }.items()
         }
+        top_hashes["invocation_intent_sha256"] = attempt_hashes[
+            "invocation_intent_sha256"
+        ]
         attempt_record = {
             "attempt": attempt_number,
             "status": status,
@@ -1490,6 +1686,12 @@ def execute_cell(
             "error": final_error,
         }
         atomic_write_json(metadata_path, metadata)
+        pending_intent_path.unlink()
+        directory_descriptor = os.open(cell_dir, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
         if final_status != "transient_failed":
             return {"status": final_status, "skipped": False, "metadata": metadata}
         delay = retry_backoff_seconds[attempt_number - 1]
@@ -1609,6 +1811,165 @@ def validate_run_directory(run_dir: Path, inputs: PilotInputs) -> list[str]:
         errors.append("Manifest common feature controls drifted")
     if controls.get("none_policy_additional_disables") != list(NONE_POLICY_FEATURE_DISABLES):
         errors.append("Manifest no-tool feature controls drifted")
+    if manifest.get("preflight", {}).get("status") == "completed":
+        errors.extend(validate_completed_preflight(run_dir, inputs, manifest, preflight))
+    if manifest.get("scored", {}).get("status") == "completed":
+        errors.extend(validate_completed_scored(run_dir, inputs, manifest, plan))
+    return errors
+
+
+def validate_completed_preflight(
+    run_dir: Path,
+    inputs: PilotInputs,
+    manifest: dict[str, Any],
+    rows: Sequence[dict[str, Any]],
+) -> list[str]:
+    """Recompute the discarded preflight gate from immutable cell evidence."""
+    errors: list[str] = []
+    expected_rows = generate_preflight_plan(inputs, str(manifest.get("run_id", "")))
+    if list(rows) != expected_rows:
+        errors.append("Preflight rows differ from the frozen generated plan")
+    if len(rows) != 3 or len({row.get("cell_id") for row in rows}) != 3:
+        errors.append("Preflight gate requires exactly three unique cells")
+    if not all(row.get("phase") == "preflight" and row.get("discarded") is True for row in rows):
+        errors.append("Preflight gate contains a non-discarded or wrong-phase cell")
+
+    counts = _phase_counts(run_dir, rows)
+    if counts != {"completed": 3}:
+        errors.append(f"Preflight evidence counts are not complete: {counts}")
+    expected_manifest = {
+        "status": "completed",
+        "expected_cells": 3,
+        "discarded": True,
+        "completed_cells": 3,
+        "failed_cells": 0,
+        "status_counts": {"completed": 3},
+    }
+    phase_manifest = manifest.get("preflight", {})
+    for key, expected in expected_manifest.items():
+        if phase_manifest.get(key) != expected:
+            errors.append(f"Preflight manifest mismatch: {key}")
+    expected_seal = _phase_evidence_seal(run_dir, rows)
+    if phase_manifest.get("evidence_seal") != expected_seal:
+        errors.append("Preflight evidence seal mismatch")
+
+    run_root = run_dir.resolve()
+    identity_keys = (
+        "run_id",
+        "phase",
+        "discarded",
+        "cell_id",
+        "blind_id",
+        "fixture_id",
+        "workflow_id",
+        "trial",
+        "tool_policy",
+    )
+    for row in rows:
+        candidate = run_dir / str(row.get("cell_dir", ""))
+        try:
+            cell_dir = candidate.resolve(strict=True)
+            cell_dir.relative_to(run_root)
+        except (FileNotFoundError, ValueError):
+            errors.append(f"Unsafe or missing preflight cell directory: {row.get('cell_id')}")
+            continue
+        if candidate.is_symlink() or not cell_dir.is_dir():
+            errors.append(f"Unsafe preflight cell directory: {row.get('cell_id')}")
+            continue
+        metadata_path = cell_dir / "metadata.json"
+        if metadata_path.is_symlink() or not metadata_path.is_file():
+            errors.append(f"Missing preflight metadata: {row.get('cell_id')}")
+            continue
+        metadata = load_json(metadata_path)
+        if metadata.get("status") != "completed":
+            errors.append(f"Preflight cell is not completed: {row.get('cell_id')}")
+        for key in identity_keys:
+            if metadata.get(key) != row.get(key):
+                errors.append(f"Preflight metadata mismatch for {row.get('cell_id')}: {key}")
+        if metadata.get("hashes", {}).get("prompt_sha256") != row.get("prompt_sha256"):
+            errors.append(f"Preflight prompt hash mismatch: {row.get('cell_id')}")
+        errors.extend(verify_cell_artifacts(cell_dir, metadata))
+    return errors
+
+
+def validate_completed_scored(
+    run_dir: Path,
+    inputs: PilotInputs,
+    manifest: dict[str, Any],
+    rows: Sequence[dict[str, Any]],
+) -> list[str]:
+    """Validate the sealed 45-cell scored evidence before resume or grading."""
+    errors: list[str] = []
+    expected_rows, expected_blind_map = generate_scored_plan(
+        inputs,
+        str(manifest.get("run_id", "")),
+        int(manifest.get("plan_seed", -1)),
+        int(manifest.get("blind_seed", -1)),
+    )
+    if list(rows) != expected_rows:
+        errors.append("Scored rows differ from the frozen generated plan")
+    if load_json(run_dir / "blind-map-private.json") != expected_blind_map:
+        errors.append("Scored blind map differs from the frozen generated map")
+    if len(rows) != 45 or len({row.get("cell_id") for row in rows}) != 45:
+        errors.append("Scored evidence requires exactly 45 unique cells")
+    if not all(row.get("phase") == "scored" and row.get("discarded") is False for row in rows):
+        errors.append("Scored evidence contains a discarded or wrong-phase cell")
+
+    counts = _phase_counts(run_dir, rows)
+    if counts != {"completed": 45}:
+        errors.append(f"Scored evidence counts are not complete: {counts}")
+    expected_manifest = {
+        "status": "completed",
+        "expected_cells": 45,
+        "completed_cells": 45,
+        "failed_cells": 0,
+        "status_counts": {"completed": 45},
+    }
+    phase_manifest = manifest.get("scored", {})
+    for key, expected in expected_manifest.items():
+        if phase_manifest.get(key) != expected:
+            errors.append(f"Scored manifest mismatch: {key}")
+    if manifest.get("status") != "scored_complete":
+        errors.append("Run manifest is not scored_complete")
+    if phase_manifest.get("evidence_seal") != _phase_evidence_seal(run_dir, rows):
+        errors.append("Scored evidence seal mismatch")
+
+    run_root = run_dir.resolve()
+    identity_keys = (
+        "run_id",
+        "phase",
+        "discarded",
+        "cell_id",
+        "blind_id",
+        "fixture_id",
+        "workflow_id",
+        "trial",
+        "tool_policy",
+    )
+    for row in rows:
+        candidate = run_dir / str(row.get("cell_dir", ""))
+        try:
+            cell_dir = candidate.resolve(strict=True)
+            cell_dir.relative_to(run_root)
+        except (FileNotFoundError, ValueError):
+            errors.append(f"Unsafe or missing scored cell directory: {row.get('cell_id')}")
+            continue
+        if candidate.is_symlink() or not cell_dir.is_dir():
+            errors.append(f"Unsafe scored cell directory: {row.get('cell_id')}")
+            continue
+        metadata_path = cell_dir / "metadata.json"
+        if metadata_path.is_symlink() or not metadata_path.is_file():
+            errors.append(f"Missing scored metadata: {row.get('cell_id')}")
+            continue
+        metadata = load_json(metadata_path)
+        if metadata.get("status") != "completed":
+            errors.append(f"Scored cell is not completed: {row.get('cell_id')}")
+        for key in identity_keys:
+            if metadata.get(key) != row.get(key):
+                errors.append(f"Scored metadata mismatch for {row.get('cell_id')}: {key}")
+        if metadata.get("hashes", {}).get("prompt_sha256") != row.get("prompt_sha256"):
+            errors.append(f"Scored prompt hash mismatch: {row.get('cell_id')}")
+        errors.extend(verify_cell_artifacts(cell_dir, metadata))
     return errors
 
 
@@ -1621,6 +1982,29 @@ def _phase_counts(run_dir: Path, rows: Sequence[dict[str, Any]]) -> dict[str, in
         else:
             counts["missing"] += 1
     return dict(counts)
+
+
+def _phase_evidence_seal(
+    run_dir: Path, rows: Sequence[dict[str, Any]]
+) -> dict[str, Any]:
+    cells: list[dict[str, Any]] = []
+    for row in rows:
+        metadata_path = run_dir / row["cell_dir"] / "metadata.json"
+        metadata_sha256 = None
+        if metadata_path.is_file() and not metadata_path.is_symlink():
+            metadata_sha256 = sha256_file(metadata_path)
+        cells.append(
+            {
+                "cell_id": row["cell_id"],
+                "metadata_path": str(PurePosixPath(row["cell_dir"]) / "metadata.json"),
+                "metadata_sha256": metadata_sha256,
+            }
+        )
+    return {
+        "algorithm": "sha256",
+        "cells": cells,
+        "seal_sha256": sha256_bytes(canonical_json_bytes(cells)),
+    }
 
 
 def _update_manifest_phase(
@@ -1643,6 +2027,7 @@ def _update_manifest_phase(
             "completed_cells": completed,
             "failed_cells": failed,
             "status_counts": counts,
+            "evidence_seal": _phase_evidence_seal(run_dir, rows),
         }
     )
     manifest["status"] = "scored_complete" if phase == "scored" and status == "completed" else status
@@ -1778,6 +2163,73 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def execute_requested_phase(
+    args: argparse.Namespace, inputs: PilotInputs, runtime: dict[str, Any]
+) -> int:
+    with exclusive_run_lock(args.run_dir):
+        run_errors = validate_run_directory(args.run_dir, inputs)
+        if run_errors:
+            raise PilotError("; ".join(run_errors))
+        manifest = load_json(args.run_dir / "run-manifest.json")
+        if Path(manifest["cli_path"]).resolve() != args.cli_path.resolve():
+            raise PilotError("CLI path drift from frozen run manifest")
+        if Path(manifest["codex_home"]).resolve() != args.codex_home.resolve():
+            raise PilotError("CODEX_HOME drift from frozen run manifest")
+        if manifest["cli_version"] != runtime["cli_version"]:
+            raise PilotError("CLI version drift from frozen run manifest")
+        if args.command == "preflight":
+            rows = load_jsonl(args.run_dir / "preflight-plan.jsonl")
+            result = execute_phase(
+                run_dir=args.run_dir,
+                inputs=inputs,
+                rows=rows,
+                phase="preflight",
+                cli_path=args.cli_path,
+                codex_home=args.codex_home,
+                cli_version=runtime["cli_version"],
+                max_retries=args.max_retries,
+                timeout_seconds=args.timeout_seconds,
+                retry_backoff_seconds=args.retry_backoff_seconds,
+            )
+            print(
+                json.dumps(
+                    {
+                        "ok": result["preflight"]["status"] == "completed",
+                        "preflight": result["preflight"],
+                    }
+                )
+            )
+            return 0 if result["preflight"]["status"] == "completed" else 1
+
+        if manifest.get("preflight", {}).get("status") != "completed":
+            raise PilotError("Scored run is blocked until all three discarded preflight cells complete")
+        preflight_rows = load_jsonl(args.run_dir / "preflight-plan.jsonl")
+        preflight_errors = validate_completed_preflight(
+            args.run_dir, inputs, manifest, preflight_rows
+        )
+        if preflight_errors:
+            raise PilotError("; ".join(preflight_errors))
+        rows = load_jsonl(args.run_dir / "plan-private.jsonl")
+        result = execute_phase(
+            run_dir=args.run_dir,
+            inputs=inputs,
+            rows=rows,
+            phase="scored",
+            cli_path=args.cli_path,
+            codex_home=args.codex_home,
+            cli_version=runtime["cli_version"],
+            max_retries=args.max_retries,
+            timeout_seconds=args.timeout_seconds,
+            retry_backoff_seconds=args.retry_backoff_seconds,
+        )
+        print(
+            json.dumps(
+                {"ok": result["scored"]["status"] == "completed", "scored": result["scored"]}
+            )
+        )
+        return 0 if result["scored"]["status"] == "completed" else 1
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     args = build_parser().parse_args(list(argv) if argv is not None else None)
     try:
@@ -1807,49 +2259,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             print(json.dumps({"ok": True, "run_id": manifest["run_id"], "run_dir": str(args.run_dir)}))
             return 0
 
-        run_errors = validate_run_directory(args.run_dir, inputs)
-        if run_errors:
-            raise PilotError("; ".join(run_errors))
-        manifest = load_json(args.run_dir / "run-manifest.json")
-        if Path(manifest["cli_path"]).resolve() != args.cli_path.resolve():
-            raise PilotError("CLI path drift from frozen run manifest")
-        if Path(manifest["codex_home"]).resolve() != args.codex_home.resolve():
-            raise PilotError("CODEX_HOME drift from frozen run manifest")
-        if manifest["cli_version"] != runtime["cli_version"]:
-            raise PilotError("CLI version drift from frozen run manifest")
-        if args.command == "preflight":
-            rows = load_jsonl(args.run_dir / "preflight-plan.jsonl")
-            result = execute_phase(
-                run_dir=args.run_dir,
-                inputs=inputs,
-                rows=rows,
-                phase="preflight",
-                cli_path=args.cli_path,
-                codex_home=args.codex_home,
-                cli_version=runtime["cli_version"],
-                max_retries=args.max_retries,
-                timeout_seconds=args.timeout_seconds,
-                retry_backoff_seconds=args.retry_backoff_seconds,
-            )
-            print(json.dumps({"ok": result["preflight"]["status"] == "completed", "preflight": result["preflight"]}))
-            return 0 if result["preflight"]["status"] == "completed" else 1
-        if manifest.get("preflight", {}).get("status") != "completed":
-            raise PilotError("Scored run is blocked until all three discarded preflight cells complete")
-        rows = load_jsonl(args.run_dir / "plan-private.jsonl")
-        result = execute_phase(
-            run_dir=args.run_dir,
-            inputs=inputs,
-            rows=rows,
-            phase="scored",
-            cli_path=args.cli_path,
-            codex_home=args.codex_home,
-            cli_version=runtime["cli_version"],
-            max_retries=args.max_retries,
-            timeout_seconds=args.timeout_seconds,
-            retry_backoff_seconds=args.retry_backoff_seconds,
-        )
-        print(json.dumps({"ok": result["scored"]["status"] == "completed", "scored": result["scored"]}))
-        return 0 if result["scored"]["status"] == "completed" else 1
+        return execute_requested_phase(args, inputs, runtime)
     except (PilotError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
         return 1

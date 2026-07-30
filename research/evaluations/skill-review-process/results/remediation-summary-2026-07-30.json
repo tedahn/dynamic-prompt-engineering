@@ -125,6 +125,43 @@
       "validation": "C-056 and S-068 label PR-003 as an author summary, remove independently untraceable historical severity counts, and retain only directly inspectable mechanical results"
     }
   ],
+  "pr005_exact_head_review_remediation": [
+    {
+      "review_id": "PR-005-6856e2644b4b",
+      "finding_ids": ["ER-001", "EM-001"],
+      "severity": "P1",
+      "status": "mechanically_validated_pending_replacement_exact_head_review",
+      "validation": "The model-free lifecycle regression now runs from an isolated detached snapshot and is required by the candidate checker; the staged candidate passes the detached test and direct rehearsal."
+    },
+    {
+      "review_id": "PR-005-6856e2644b4b",
+      "finding_ids": ["ER-002", "ER-003"],
+      "severity": "P1/P2",
+      "status": "mechanically_validated_pending_replacement_exact_head_review",
+      "validation": "Packet authors, reviewers, and adjudicators use distinct canonical identities, all Git routing variables are removed, and schema 1.1 validation rejects identity collisions and ambient Git redirection."
+    },
+    {
+      "review_id": "PR-005-6856e2644b4b",
+      "finding_ids": ["ER-004", "ER-005"],
+      "severity": "P1/P2",
+      "status": "mechanically_validated_pending_replacement_exact_head_review",
+      "validation": "Durable provider invocation intents require reconciliation after ambiguous outcomes, and preflight plus scored artifacts are sealed and revalidated before reuse or grading."
+    },
+    {
+      "review_id": "PR-005-6856e2644b4b",
+      "finding_ids": ["SSO-001", "SSO-002", "SSO-003", "SSO-004"],
+      "severity": "P1/P2",
+      "status": "mechanically_validated_pending_replacement_exact_head_review",
+      "validation": "Signed provider execution authorization, separated lifecycle roles, explicit child-process environment allowlists, bounded budgets, and an active crash-recoverable rollback command are covered by negative-path tests."
+    },
+    {
+      "review_id": "PR-005-6856e2644b4b",
+      "finding_ids": ["EM-002"],
+      "severity": "P2",
+      "status": "mechanically_validated_pending_replacement_exact_head_review",
+      "validation": "The tracked PR-005 mechanical result binds all 196 passing unit tests and additional validators to inspectable repository artifacts; free-text validation claims are rejected by schema 1.1."
+    }
+  ],
   "merge_readiness": {
     "targeted_blockers_closed": false,
     "targeted_remediations_mechanically_validated": true,

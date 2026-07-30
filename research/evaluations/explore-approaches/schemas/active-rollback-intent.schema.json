@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-active-rollback-intent.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "created_at",
+    "updated_at",
+    "transaction_id",
+    "installation_record_sha256",
+    "install_intent_sha256",
+    "merge_commit",
+    "destination",
+    "backup",
+    "quarantine",
+    "operator",
+    "reason",
+    "candidate_file_hashes",
+    "previous_existed",
+    "previous_file_hashes",
+    "phase",
+    "record_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "transaction_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "installation_record_sha256": {"$ref": "#/$defs/sha256"},
+    "install_intent_sha256": {"$ref": "#/$defs/sha256"},
+    "merge_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "destination": {"type": "string", "minLength": 1},
+    "backup": {"type": "string", "minLength": 1},
+    "quarantine": {"type": "string", "minLength": 1},
+    "operator": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 8},
+    "candidate_file_hashes": {"$ref": "#/$defs/file_hashes"},
+    "previous_existed": {"type": "boolean"},
+    "previous_file_hashes": {"$ref": "#/$defs/file_hashes"},
+    "phase": {
+      "enum": [
+        "prepared",
+        "quarantine-pending",
+        "candidate-quarantined",
+        "restore-pending",
+        "previous-restored",
+        "rollback-canary-pending",
+        "completed"
+      ]
+    },
+    "record_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "file_hashes": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    }
+  }
+}

@@ -76,6 +76,15 @@
     "run_directory_must_be_outside_repository": true,
     "publish_private_holdout": false
   },
+  "roles": {
+    "candidate_author": "REPLACE_WITH_CANDIDATE_AUTHOR",
+    "holdout_owner": "REPLACE_WITH_HOLDOUT_OWNER",
+    "human_reviewer_adjudicator": "REPLACE_WITH_HUMAN_REVIEWER_ADJUDICATOR",
+    "provider_execution_approver": "REPLACE_WITH_PROVIDER_EXECUTION_APPROVER",
+    "promotion_owner": "REPLACE_WITH_PROMOTION_OWNER",
+    "automation_actor": "REPLACE_WITH_AUTOMATION_ACTOR",
+    "pr_reviewer": "REPLACE_WITH_INDEPENDENT_REVIEWER"
+  },
   "holdout_verification": {
     "mode": "ssh",
     "namespace": "codex-skill-holdout",
@@ -88,11 +97,27 @@
     "allowed_signers_path": "",
     "expected_identity": ""
   },
+  "execution_verification": {
+    "mode": "ssh",
+    "namespace": "codex-skill-provider-execution",
+    "allowed_signers_path": "",
+    "expected_identity": ""
+  },
   "approval_verification": {
     "mode": "ssh",
     "namespace": "codex-skill-promotion",
     "allowed_signers_path": "",
     "expected_identity": ""
+  },
+  "provider_execution_limits": {
+    "max_subject_calls": 432,
+    "max_grader_calls": 216,
+    "max_canary_calls": 1,
+    "max_total_calls": 649,
+    "max_transient_retries": 2,
+    "max_billed_tokens_per_call": 16384,
+    "max_total_billed_tokens": 10633216,
+    "max_authorization_ttl_seconds": 86400
   },
   "promotion": {
     "repository_url": "https://github.com/tedahn/dynamic-prompt-engineering.git",
@@ -133,10 +158,22 @@
     "skill_name": "explore-approaches",
     "installer_script": "~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py",
     "installer_dependency_paths": [],
+    "installer_env_allowlist": [
+      "PATH",
+      "TMPDIR",
+      "LANG",
+      "LC_ALL"
+    ],
     "backup_directory": "~/.codex/skills/.backups",
     "quarantine_directory": "~/.codex/skills/.quarantine",
     "validator_argv": [],
     "validator_entrypoint_path": "",
-    "validator_dependency_paths": []
+    "validator_dependency_paths": [],
+    "validator_env_allowlist": [
+      "PATH",
+      "TMPDIR",
+      "LANG",
+      "LC_ALL"
+    ]
   }
 }

@@ -169,6 +169,7 @@ class LifecycleCliTest(unittest.TestCase):
             store, lifecycle = CLI._lifecycle(run_dir)
             try:
                 with (
+                    mock.patch.object(CLI, "role_bindings", return_value={}),
                     mock.patch.object(CLI, "_manifest", return_value=manifest),
                     mock.patch.object(CLI, "_verified_plan", return_value=(plan, {})),
                     mock.patch.object(CLI, "verify_frozen_holdout_signature") as signature_check,
@@ -203,6 +204,7 @@ class LifecycleCliTest(unittest.TestCase):
             store, lifecycle = CLI._lifecycle(run_dir)
             try:
                 with (
+                    mock.patch.object(CLI, "role_bindings", return_value={}),
                     mock.patch.object(CLI, "_manifest", return_value=manifest),
                     mock.patch.object(CLI, "_verified_plan", return_value=(plan, {})),
                     mock.patch.object(
@@ -251,6 +253,7 @@ class LifecycleCliTest(unittest.TestCase):
                     idempotency_key="test:legacy-holdout-ready",
                 )
                 with (
+                    mock.patch.object(CLI, "role_bindings", return_value={}),
                     mock.patch.object(CLI, "_manifest", return_value=manifest),
                     mock.patch.object(CLI, "_verified_plan", return_value=(plan, {})),
                     mock.patch.object(CLI, "verify_frozen_holdout_signature"),
@@ -295,6 +298,8 @@ class LifecycleCliTest(unittest.TestCase):
                 "github_actor": "automation",
             }
             receipt = {"record_sha256": "e" * 64, "merge_commit": merged["merge_commit"], "status": "installed"}
+            execution_path = run_dir / "execution.json"
+            execution_path.write_text("{}\n", encoding="utf-8")
 
             store, lifecycle = self._awaiting_lifecycle(run_dir)
             try:
@@ -321,8 +326,20 @@ class LifecycleCliTest(unittest.TestCase):
                     mock.patch.object(CLI, "verify_merged_candidate", return_value={"SKILL.md": "f" * 64}),
                     mock.patch.object(CLI, "verify_installed_candidate", return_value={"SKILL.md": "f" * 64}),
                     mock.patch.object(CLI, "atomic_install", return_value=receipt),
+                    mock.patch.object(
+                        CLI,
+                        "_verified_execution_authorization",
+                        return_value=(execution_path, {"run": {}, "authority": {}}),
+                    ),
                 ):
-                    installed = CLI._merge_and_install(run_dir, approval_path, config, lifecycle)
+                    installed = CLI._merge_and_install(
+                        run_dir,
+                        approval_path,
+                        config,
+                        lifecycle,
+                        execution_path,
+                        True,
+                    )
                     self.assertEqual(lifecycle.current["state"], "active")
                     self.assertEqual(installed, receipt)
 

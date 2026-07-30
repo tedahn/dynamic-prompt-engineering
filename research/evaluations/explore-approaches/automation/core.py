@@ -154,7 +154,21 @@ def atomic_write_json(path: Path, value: Any) -> None:
 
 def load_config(path: Path) -> dict[str, Any]:
     config = load_json(path)
-    required = {"schema_version", "pipeline_id", "candidate", "evaluation", "privacy", "promotion", "installation"}
+    required = {
+        "schema_version",
+        "pipeline_id",
+        "candidate",
+        "evaluation",
+        "privacy",
+        "roles",
+        "holdout_verification",
+        "human_review_verification",
+        "execution_verification",
+        "approval_verification",
+        "provider_execution_limits",
+        "promotion",
+        "installation",
+    }
     missing = sorted(required - config.keys())
     if missing:
         raise PipelineError(f"Pipeline config missing fields: {missing}")

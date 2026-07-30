@@ -41,4 +41,4 @@ Do not treat helpfulness or polished prose as safety evidence.
 
 Receive submissions only after their hashes are frozen. Verify evidence anchors, merge duplicates by mechanism rather than wording, record material disagreements, and decide whether each finding is upheld, revised, rejected, or unresolved. Prefer stronger direct evidence over reviewer count.
 
-The adjudicator cannot supply missing review coverage, rewrite the target, approve the human gate, or convert absent evidence into a pass.
+The adjudicator must use a stable identity distinct from every reviewer ID and every manifest packet-author ID, and must affirm independence from both groups. The adjudicator cannot supply missing review coverage, rewrite the target, approve the human gate, or convert absent evidence into a pass.

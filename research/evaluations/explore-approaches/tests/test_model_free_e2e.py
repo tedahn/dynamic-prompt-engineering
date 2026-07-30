@@ -102,6 +102,23 @@ class ModelFreeE2ERegressionTest(unittest.TestCase):
             self._run_e2e(checkout, root / "dirty.json")
             self.assertEqual(run_command(["git", "status", "--porcelain"], cwd=checkout).stdout, dirty_before)
 
+    def test_exact_command_passes_from_a_detached_head_checkout(self) -> None:
+        if os.environ.get(NESTED_E2E_ENV) == "1":
+            self.skipTest("model-free E2E subprocess already exercises the remaining suite")
+        with tempfile.TemporaryDirectory(prefix="model-free-e2e-detached-") as temporary:
+            root = Path(temporary)
+            checkout = root / "checkout"
+            self._committed_snapshot(checkout)
+            head = run_command(["git", "rev-parse", "HEAD"], cwd=checkout).stdout.strip()
+            run_command(["git", "checkout", "--detach", head], cwd=checkout)
+            branch = run_command(
+                ["git", "symbolic-ref", "--short", "HEAD"], cwd=checkout, check=False
+            )
+            self.assertNotEqual(branch.returncode, 0)
+            self._run_e2e(checkout, root / "detached.json")
+            self.assertEqual(run_command(["git", "rev-parse", "HEAD"], cwd=checkout).stdout.strip(), head)
+            self.assertEqual(run_command(["git", "status", "--porcelain"], cwd=checkout).stdout, "")
+
 
 if __name__ == "__main__":
     unittest.main()

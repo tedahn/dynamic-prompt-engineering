@@ -39,9 +39,14 @@ Use an empty findings array for a clean review, but still declare coverage and l
 ## Integrity requirements
 
 - All artifacts repeat the review ID and immutable target hashes.
+- New packets use schema 1.1. The validator accepts schema 1.0 only for the exact frozen PR-001 packet-index fingerprint and target; it cannot be used to create or authorize another legacy target.
+- The manifest records a non-empty `packet_author_ids` array using stable, canonical identities for every target or packet author.
+- Every `validation_records` entry contains only a claim, repository-relative `artifact_path`, and `artifact_sha256`. The artifact must be present in the frozen head, listed in `evidence_index`, and match the Git-recomputed evidence hash. Free-text or otherwise unbound count claims are invalid.
 - Reviewer IDs are unique and `independent_context` is true.
+- The adjudicator affirms independence from authors and reviewers, and its canonical identity differs from every reviewer ID and every manifest packet-author ID.
 - Submission filenames match reviewer roles.
 - Adjudication records exact SHA-256 values for every submission.
+- All Git target resolution, diff, changed-file, and blob reads discard ambient `GIT_*` variables before running.
 - A human decision names an actor of type `human`, repeats the target, records conditions and reversal evidence, and cannot be generated as approved by the validator.
 - Validation summaries report merge eligibility, behavioral efficacy, promotion readiness, and installation readiness as separate fields.
 

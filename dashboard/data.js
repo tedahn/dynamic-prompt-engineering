@@ -762,29 +762,29 @@ window.PROMPT_RESEARCH_DATA = {
   ],
   "ledgers": {
     "claims": {
-      "count": 57,
+      "count": 58,
       "status": {
         "Grounded fact": 32,
         "Looks believable": 4,
         "Corroborated": 10,
         "Forecast/opinion": 2,
-        "Experimental": 9
+        "Experimental": 10
       },
       "confidence": {
-        "high": 36,
+        "high": 37,
         "medium": 19,
         "low": 2
       }
     },
     "sources": {
-      "count": 69,
+      "count": 70,
       "type": {
         "official documentation": 11,
         "official help": 2,
         "official engineering article": 4,
         "direct artifact": 7,
         "research paper": 36,
-        "direct observation": 4,
+        "direct observation": 5,
         "research preprint": 2,
         "vendor technical report": 1,
         "direct technical report": 1,
@@ -792,7 +792,7 @@ window.PROMPT_RESEARCH_DATA = {
       }
     },
     "evalCases": {
-      "count": 29,
+      "count": 30,
       "status": {
         "blocked": 1,
         "designed": 14,
@@ -800,24 +800,24 @@ window.PROMPT_RESEARCH_DATA = {
         "mechanically-validated": 5,
         "development-diagnostic": 2,
         "remediation-validated": 5,
-        "remediation-validated-pending-head-review": 1
+        "remediation-validated-pending-head-review": 2
       }
     },
     "assumptions": {
-      "count": 14,
+      "count": 15,
       "status": {
-        "open": 14
+        "open": 15
       }
     },
     "changes": {
-      "count": 13,
+      "count": 14,
       "status": {
         "validated": 1,
         "validated-design": 4,
         "mechanically-validated-prototype": 1,
         "mechanically-validated-automation": 1,
         "development-reviewed-prototype": 1,
-        "remediation-validated-pending-head-review": 2,
+        "remediation-validated-pending-head-review": 3,
         "mechanically-validated-pending-head-review": 1,
         "prototype": 1,
         "remediation-validated": 1
@@ -835,7 +835,7 @@ window.PROMPT_RESEARCH_DATA = {
       "id": "02",
       "name": "Source",
       "state": "done",
-      "note": "69 sources registered"
+      "note": "70 sources registered"
     },
     {
       "id": "03",

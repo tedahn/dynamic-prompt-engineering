@@ -933,6 +933,19 @@ class PromotionAutomationTest(unittest.TestCase):
             ],
         }
         config = {
+            "roles": {
+                "candidate_author": "candidate-author",
+                "holdout_owner": "holdout-owner",
+                "human_reviewer_adjudicator": "human-adjudicator",
+                "provider_execution_approver": "execution-approver",
+                "promotion_owner": "promotion-owner",
+                "automation_actor": "automation",
+                "pr_reviewer": "reviewer",
+            },
+            "holdout_verification": {"expected_identity": "holdout-owner"},
+            "human_review_verification": {"expected_identity": "human-adjudicator"},
+            "execution_verification": {"expected_identity": "execution-approver"},
+            "approval_verification": {"expected_identity": "promotion-owner"},
             "promotion": {
                 "repository_slug": "example/repo",
                 "base_branch": "main",
@@ -995,7 +1008,7 @@ class PromotionAutomationTest(unittest.TestCase):
                     "automation.promotion.run_command",
                     return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(rejected), stderr=""),
                 ):
-                    with self.assertRaisesRegex(PipelineError, "allowed independent reviewer"):
+                    with self.assertRaisesRegex(PipelineError, "frozen independent reviewer"):
                         merge_reviewed_pr(snapshot["url"], "b" * 40, config)
 
         superseded = {
@@ -1019,7 +1032,7 @@ class PromotionAutomationTest(unittest.TestCase):
             "automation.promotion.run_command",
             return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(superseded), stderr=""),
         ):
-            with self.assertRaisesRegex(PipelineError, "allowed independent reviewer"):
+            with self.assertRaisesRegex(PipelineError, "frozen independent reviewer"):
                 merge_reviewed_pr(snapshot["url"], "b" * 40, config)
 
         for review_commit in ({"oid": "a" * 40}, None):
@@ -1038,8 +1051,33 @@ class PromotionAutomationTest(unittest.TestCase):
                         [], 0, stdout=json.dumps(invalid_head_review), stderr=""
                     ),
                 ):
-                    with self.assertRaisesRegex(PipelineError, "allowed independent reviewer"):
+                    with self.assertRaisesRegex(PipelineError, "frozen independent reviewer"):
                         merge_reviewed_pr(snapshot["url"], "b" * 40, config)
+
+        author_approval = {
+            **snapshot,
+            "reviews": [
+                {
+                    "state": "APPROVED",
+                    "submittedAt": "2026-07-30T12:00:00Z",
+                    "author": {"login": "candidate-author"},
+                    "commit": {"oid": "b" * 40},
+                }
+            ],
+        }
+        author_allowlisted = {
+            **config,
+            "promotion": {
+                **config["promotion"],
+                "required_reviewer_logins": ["reviewer", "candidate-author"],
+            },
+        }
+        with patch("automation.promotion.verify_github_actor", return_value="automation"), patch(
+            "automation.promotion.run_command",
+            return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(author_approval), stderr=""),
+        ):
+            with self.assertRaisesRegex(PipelineError, "frozen independent reviewer"):
+                merge_reviewed_pr(snapshot["url"], "b" * 40, author_allowlisted)
 
         placeholder_policy = {
             **config,
@@ -1050,7 +1088,7 @@ class PromotionAutomationTest(unittest.TestCase):
             },
         }
         with patch("automation.promotion.run_command", return_value=completed):
-            with self.assertRaisesRegex(PipelineError, "non-placeholder GitHub automation actor"):
+            with self.assertRaisesRegex(PipelineError, "Role binding for automation_actor"):
                 merge_reviewed_pr(snapshot["url"], "b" * 40, placeholder_policy)
 
         mismatched = subprocess.CompletedProcess([], 0, stdout="reviewer\n", stderr="")

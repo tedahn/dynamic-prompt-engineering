@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-active-rollback-record.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "rolled_back_at",
+    "transaction_id",
+    "active_rollback_intent_sha256",
+    "installation_record_sha256",
+    "install_intent_sha256",
+    "rollback_canary_record_sha256",
+    "merge_commit",
+    "destination",
+    "quarantine",
+    "operator",
+    "reason",
+    "quarantined_file_hashes",
+    "restored_previous",
+    "restored_file_hashes",
+    "status",
+    "record_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "rolled_back_at": {"type": "string", "format": "date-time"},
+    "transaction_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "active_rollback_intent_sha256": {"$ref": "#/$defs/sha256"},
+    "installation_record_sha256": {"$ref": "#/$defs/sha256"},
+    "install_intent_sha256": {"$ref": "#/$defs/sha256"},
+    "rollback_canary_record_sha256": {"$ref": "#/$defs/sha256"},
+    "merge_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "destination": {"type": "string", "minLength": 1},
+    "quarantine": {"type": "string", "minLength": 1},
+    "operator": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 8},
+    "quarantined_file_hashes": {"$ref": "#/$defs/file_hashes"},
+    "restored_previous": {"type": "boolean"},
+    "restored_file_hashes": {"$ref": "#/$defs/file_hashes"},
+    "status": {"const": "rolled-back"},
+    "record_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "file_hashes": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    }
+  }
+}

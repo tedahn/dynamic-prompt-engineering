@@ -22,7 +22,7 @@ TRANSITIONS: dict[str, set[str]] = {
     "merged": {"installing"},
     "installing": {"canary"},
     "canary": {"active", "quarantined"},
-    "active": set(),
+    "active": {"quarantined"},
     "quarantined": {"rolled-back"},
     "rolled-back": set(),
     "rejected": set(),

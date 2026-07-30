@@ -94,10 +94,45 @@ class GradePilotTests(unittest.TestCase):
             }
             for name, content in text_files.items():
                 (cell_dir / name).write_text(content, encoding="utf-8")
+            attempt_dir = cell_dir / "attempts" / "attempt-01"
+            attempt_dir.mkdir(parents=True)
+            for name in GRADER.ATTEMPT_HASH_KEYS:
+                if name == "invocation-intent.json":
+                    continue
+                (attempt_dir / name).write_text(text_files[name], encoding="utf-8")
+            intent = {
+                "schema_version": "2.0",
+                "record_type": "provider-invocation-intent",
+                "status": "sealed",
+                "run_id": row["run_id"],
+                "phase": "scored",
+                "cell_id": row["cell_id"],
+                "attempt": 1,
+                "created_at": "2026-07-30T12:00:00Z",
+                "sealed_at": "2026-07-30T12:00:01Z",
+            }
+            (attempt_dir / "invocation-intent.json").write_text(
+                json.dumps(intent, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+            )
             hashes = {
                 hash_key: GRADER.sha256_file(cell_dir / name)
                 for name, hash_key in GRADER.HASH_KEYS.items()
             }
+            attempt_hashes = {
+                hash_key: GRADER.sha256_file(attempt_dir / name)
+                for name, hash_key in GRADER.ATTEMPT_HASH_KEYS.items()
+            }
+            hashes["invocation_intent_sha256"] = attempt_hashes[
+                "invocation_intent_sha256"
+            ]
+            workspace = {
+                "before_tree_sha256": "empty-tree",
+                "after_tree_sha256": "empty-tree",
+                "changed": False,
+                "changed_paths": [],
+                "diff_sha256": hashes["workspace_diff_sha256"],
+            }
+            completed_at = "2026-07-30T12:00:01Z"
             metadata = {
                 "schema_version": "2.0",
                 "run_id": row["run_id"],
@@ -109,20 +144,24 @@ class GradePilotTests(unittest.TestCase):
                 "workflow_id": row["workflow_id"],
                 "trial": row["trial"],
                 "status": "completed",
+                "completed_at": completed_at,
                 "attempt_count": 1,
                 "retry_count": 0,
-                "attempts": [],
+                "max_retries": 0,
+                "attempts": [
+                    {
+                        "attempt": 1,
+                        "status": "completed",
+                        "completed_at": completed_at,
+                        "hashes": attempt_hashes,
+                        "workspace": workspace,
+                    }
+                ],
                 "requested_model": "gpt-5.6-sol",
                 "reasoning_effort": "high",
                 "tool_policy": row["tool_policy"],
                 "hashes": hashes,
-                "workspace": {
-                    "before_tree_sha256": "empty-tree",
-                    "after_tree_sha256": "empty-tree",
-                    "changed": False,
-                    "changed_paths": [],
-                    "diff_sha256": hashes["workspace_diff_sha256"],
-                },
+                "workspace": workspace,
             }
             (cell_dir / "metadata.json").write_text(
                 json.dumps(metadata, sort_keys=True, indent=2) + "\n", encoding="utf-8"
@@ -142,6 +181,8 @@ class GradePilotTests(unittest.TestCase):
                 "expected_cells": 45,
                 "completed_cells": 45,
                 "failed_cells": 0,
+                "status_counts": {"completed": 45},
+                "evidence_seal": GRADER.phase_evidence_seal(run_dir, plan),
             },
         }
         (run_dir / "run-manifest.json").write_text(
@@ -185,6 +226,26 @@ class GradePilotTests(unittest.TestCase):
             first = run_dir / loaded["plan"][0]["cell_dir"] / "response.txt"
             first.write_text("tampered\n", encoding="utf-8")
             with self.assertRaisesRegex(GRADER.GradeError, "Hash mismatch"):
+                GRADER.load_completed_run(run_dir)
+
+    def test_scored_manifest_seal_rejects_rehashed_response_forgery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self._make_completed_run(Path(temp_dir))
+            plan = RUNNER.load_jsonl(run_dir / "plan-private.jsonl")
+            cell_dir = run_dir / plan[0]["cell_dir"]
+            response = cell_dir / "response.txt"
+            attempt_response = cell_dir / "attempts" / "attempt-01" / "response.txt"
+            response.write_text("forged response\n", encoding="utf-8")
+            attempt_response.write_text("forged response\n", encoding="utf-8")
+            forged_hash = GRADER.sha256_file(response)
+            metadata_path = cell_dir / "metadata.json"
+            metadata = GRADER.load_json(metadata_path)
+            metadata["hashes"]["response_sha256"] = forged_hash
+            metadata["attempts"][-1]["hashes"]["response_sha256"] = forged_hash
+            metadata_path.write_text(
+                json.dumps(metadata, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(GRADER.GradeError, "scored evidence seal mismatch"):
                 GRADER.load_completed_run(run_dir)
 
     def test_workflow_aware_extraction_removes_only_b04_default_prompt(self) -> None:

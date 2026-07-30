@@ -5,6 +5,8 @@ import json
 import os
 from collections import defaultdict
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -428,6 +430,159 @@ class RunPilotTests(unittest.TestCase):
         self.assertIn("-before", diff)
         self.assertIn("+after", diff)
 
+    def test_exclusive_run_lock_rejects_a_second_holder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "run"
+            with RUNNER.exclusive_run_lock(run_dir):
+                with self.assertRaisesRegex(RUNNER.PilotError, "already executing"):
+                    with RUNNER.exclusive_run_lock(run_dir):
+                        self.fail("a second holder acquired the run lock")
+                child = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import importlib.util; from pathlib import Path; "
+                            f"s=importlib.util.spec_from_file_location('runner', {str(SCRIPT)!r}); "
+                            "m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "
+                            f"c=m.exclusive_run_lock(Path({str(run_dir)!r})); c.__enter__()"
+                        ),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(child.returncode, 0)
+                self.assertIn("already executing", child.stderr)
+
+    def test_run_lock_rejects_symlink_without_touching_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_dir = root / "run"
+            run_dir.mkdir()
+            victim = root / "victim.txt"
+            victim.write_text("preserve me\n", encoding="utf-8")
+            (run_dir / ".execution.lock").symlink_to(victim)
+            with self.assertRaisesRegex(RUNNER.PilotError, "Unsafe or inaccessible run lock"):
+                with RUNNER.exclusive_run_lock(run_dir):
+                    self.fail("a symlinked lock was accepted")
+            self.assertEqual(victim.read_text(encoding="utf-8"), "preserve me\n")
+
+    def test_run_lock_rejects_hardlink_without_touching_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_dir = root / "run"
+            run_dir.mkdir()
+            victim = root / "victim.txt"
+            victim.write_text("preserve me\n", encoding="utf-8")
+            os.link(victim, run_dir / ".execution.lock")
+            with self.assertRaisesRegex(RUNNER.PilotError, "not a regular file"):
+                with RUNNER.exclusive_run_lock(run_dir):
+                    self.fail("a hard-linked lock was accepted")
+            self.assertEqual(victim.read_text(encoding="utf-8"), "preserve me\n")
+
+    def test_crash_after_provider_intent_requires_reconciliation_without_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_dir = root / "run"
+            codex_home = root / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "auth.json").write_text("{}\n", encoding="utf-8")
+            cli = root / "codex"
+            cli.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            cli.chmod(0o755)
+            row = RUNNER.generate_preflight_plan(self.inputs, "crash-window")[0]
+            cell_dir = run_dir / row["cell_dir"]
+
+            def crash_after_intent(*_args: object, **_kwargs: object) -> dict[str, object]:
+                self.assertTrue((cell_dir / "pending-invocation.json").is_file())
+                metadata = RUNNER.load_json(cell_dir / "metadata.json")
+                self.assertEqual(metadata["status"], "in_progress")
+                raise KeyboardInterrupt("synthetic crash after durable intent")
+
+            with mock.patch.object(RUNNER, "_invoke_cli", side_effect=crash_after_intent):
+                with self.assertRaises(KeyboardInterrupt):
+                    RUNNER.execute_cell(
+                        run_dir=run_dir,
+                        inputs=self.inputs,
+                        row=row,
+                        cli_path=cli,
+                        codex_home=codex_home,
+                        max_retries=0,
+                        timeout_seconds=1.0,
+                        retry_backoff_seconds=(),
+                        cli_version="codex-cli test",
+                    )
+
+            with mock.patch.object(RUNNER, "_invoke_cli") as provider:
+                with self.assertRaisesRegex(RUNNER.PilotError, "ambiguous provider outcome"):
+                    RUNNER.execute_cell(
+                        run_dir=run_dir,
+                        inputs=self.inputs,
+                        row=row,
+                        cli_path=cli,
+                        codex_home=codex_home,
+                        max_retries=0,
+                        timeout_seconds=1.0,
+                        retry_backoff_seconds=(),
+                        cli_version="codex-cli test",
+                    )
+                provider.assert_not_called()
+            metadata = RUNNER.load_json(cell_dir / "metadata.json")
+            self.assertEqual(metadata["status"], "reconciliation_required")
+            self.assertEqual(metadata["error"]["kind"], "ambiguous_provider_outcome")
+
+    def test_crash_after_provider_return_still_blocks_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_dir = root / "run"
+            codex_home = root / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "auth.json").write_text("{}\n", encoding="utf-8")
+            cli = root / "codex"
+            cli.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            cli.chmod(0o755)
+            row = RUNNER.generate_preflight_plan(self.inputs, "post-return-crash")[0]
+            invocation = {
+                "stdout": "",
+                "stderr": "",
+                "exit_code": 0,
+                "timed_out": False,
+                "started_at": "2026-07-30T12:00:00Z",
+                "completed_at": "2026-07-30T12:00:01Z",
+                "latency_ms": 1000.0,
+            }
+            with mock.patch.object(RUNNER, "_invoke_cli", return_value=invocation):
+                with mock.patch.object(
+                    RUNNER, "parse_cli_events", side_effect=KeyboardInterrupt("post-return crash")
+                ):
+                    with self.assertRaises(KeyboardInterrupt):
+                        RUNNER.execute_cell(
+                            run_dir=run_dir,
+                            inputs=self.inputs,
+                            row=row,
+                            cli_path=cli,
+                            codex_home=codex_home,
+                            max_retries=0,
+                            timeout_seconds=1.0,
+                            retry_backoff_seconds=(),
+                            cli_version="codex-cli test",
+                        )
+            with mock.patch.object(RUNNER, "_invoke_cli") as provider:
+                with self.assertRaisesRegex(RUNNER.PilotError, "ambiguous provider outcome"):
+                    RUNNER.execute_cell(
+                        run_dir=run_dir,
+                        inputs=self.inputs,
+                        row=row,
+                        cli_path=cli,
+                        codex_home=codex_home,
+                        max_retries=0,
+                        timeout_seconds=1.0,
+                        retry_backoff_seconds=(),
+                        cli_version="codex-cli test",
+                    )
+                provider.assert_not_called()
+
     def test_cli_plan_preflight_run_and_resume_with_fake_codex(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -473,6 +628,70 @@ class RunPilotTests(unittest.TestCase):
             self.assertEqual(
                 RUNNER.main(["preflight", *common, "--run-dir", str(run_dir)]), 0
             )
+            preflight_rows = RUNNER.load_jsonl(run_dir / "preflight-plan.jsonl")
+            preflight_artifact = run_dir / preflight_rows[0]["cell_dir"] / "response.txt"
+            original_artifact = preflight_artifact.read_bytes()
+            preflight_artifact.write_bytes(original_artifact + b"tampered\n")
+            self.assertEqual(RUNNER.main(["run", *common, "--run-dir", str(run_dir)]), 1)
+            self.assertEqual(int((cli.parent / "exec-count.txt").read_text()), 3)
+            preflight_artifact.write_bytes(original_artifact)
+
+            first_cell_dir = run_dir / preflight_rows[0]["cell_dir"]
+            attempt_response = first_cell_dir / "attempts" / "attempt-01" / "response.txt"
+            original_attempt_response = attempt_response.read_bytes()
+            metadata_path = first_cell_dir / "metadata.json"
+            original_metadata = metadata_path.read_bytes()
+            forged_response = b"forged but internally rehashed\n"
+            preflight_artifact.write_bytes(forged_response)
+            attempt_response.write_bytes(forged_response)
+            metadata = RUNNER.load_json(metadata_path)
+            forged_hash = RUNNER.sha256_file(preflight_artifact)
+            metadata["hashes"]["response_sha256"] = forged_hash
+            metadata["attempts"][-1]["hashes"]["response_sha256"] = forged_hash
+            RUNNER.atomic_write_json(metadata_path, metadata)
+            self.assertEqual(RUNNER.main(["run", *common, "--run-dir", str(run_dir)]), 1)
+            self.assertEqual(int((cli.parent / "exec-count.txt").read_text()), 3)
+            preflight_artifact.write_bytes(original_artifact)
+            attempt_response.write_bytes(original_attempt_response)
+            metadata_path.write_bytes(original_metadata)
+
+            original_manifest = (run_dir / "run-manifest.json").read_bytes()
+            metadata = RUNNER.load_json(metadata_path)
+            metadata["attempts"][-1]["status"] = "permanent_failed"
+            RUNNER.atomic_write_json(metadata_path, metadata)
+            manifest = RUNNER.load_json(run_dir / "run-manifest.json")
+            manifest["preflight"]["evidence_seal"] = RUNNER._phase_evidence_seal(
+                run_dir, preflight_rows
+            )
+            RUNNER.atomic_write_json(run_dir / "run-manifest.json", manifest)
+            self.assertEqual(RUNNER.main(["run", *common, "--run-dir", str(run_dir)]), 1)
+            self.assertEqual(int((cli.parent / "exec-count.txt").read_text()), 3)
+            metadata_path.write_bytes(original_metadata)
+            (run_dir / "run-manifest.json").write_bytes(original_manifest)
+
+            extra_attempt = first_cell_dir / "attempts" / "attempt-99"
+            extra_attempt.mkdir()
+            self.assertEqual(RUNNER.main(["run", *common, "--run-dir", str(run_dir)]), 1)
+            self.assertEqual(int((cli.parent / "exec-count.txt").read_text()), 3)
+            extra_attempt.rmdir()
+
+            attempt_one = first_cell_dir / "attempts" / "attempt-01"
+            external_attempt = root / "external-attempt"
+            attempt_one.rename(external_attempt)
+            attempt_one.symlink_to(external_attempt, target_is_directory=True)
+            self.assertEqual(RUNNER.main(["run", *common, "--run-dir", str(run_dir)]), 1)
+            self.assertEqual(int((cli.parent / "exec-count.txt").read_text()), 3)
+            attempt_one.unlink()
+            external_attempt.rename(attempt_one)
+
+            manifest_path = run_dir / "run-manifest.json"
+            original_manifest = manifest_path.read_bytes()
+            manifest = RUNNER.load_json(manifest_path)
+            manifest["preflight"]["completed_cells"] = 2
+            RUNNER.atomic_write_json(manifest_path, manifest)
+            self.assertEqual(RUNNER.main(["run", *common, "--run-dir", str(run_dir)]), 1)
+            self.assertEqual(int((cli.parent / "exec-count.txt").read_text()), 3)
+            manifest_path.write_bytes(original_manifest)
             self.assertEqual(RUNNER.main(["run", *common, "--run-dir", str(run_dir)]), 0)
 
             plan = RUNNER.load_jsonl(run_dir / "plan-private.jsonl")

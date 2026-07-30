@@ -1,0 +1,78 @@
+{
+  "schema_version": "1.0",
+  "as_of": "2026-07-30",
+  "evidence_state": "author_executed_local_mechanical",
+  "target": "staged replacement candidate preceding the immutable exact-head review commit",
+  "decision_scope": "repository merge eligibility only",
+  "unit_suites": [
+    {
+      "suite": "codex-stateful-loop",
+      "tests": 28,
+      "status": "passed"
+    },
+    {
+      "suite": "context-composer",
+      "tests": 17,
+      "status": "passed"
+    },
+    {
+      "suite": "explore-approaches",
+      "tests": 79,
+      "status": "passed"
+    },
+    {
+      "suite": "professionalize-prompt-pilot-v2",
+      "tests": 32,
+      "status": "passed"
+    },
+    {
+      "suite": "professionalize-prompt",
+      "tests": 6,
+      "status": "passed"
+    },
+    {
+      "suite": "skill-review-process",
+      "tests": 34,
+      "status": "passed"
+    }
+  ],
+  "unit_test_total": 196,
+  "additional_validations": [
+    {
+      "validation": "candidate contract checker",
+      "artifact_path": "research/evaluations/explore-approaches/scripts/check_candidate.py",
+      "status": "passed"
+    },
+    {
+      "validation": "four skill package validator",
+      "artifact_path": "research/evaluations/skill-review-process/scripts/validate_skill_packages.py",
+      "status": "passed"
+    },
+    {
+      "validation": "model-free lifecycle end-to-end run",
+      "artifact_path": "research/evaluations/explore-approaches/scripts/model_free_e2e.py",
+      "status": "passed"
+    },
+    {
+      "validation": "frozen legacy PR-001 packet validation",
+      "artifact_path": "research/reviews/PR-001/packet-index.json",
+      "status": "passed"
+    },
+    {
+      "validation": "dashboard source parity and view tests",
+      "artifact_path": "dashboard/tests/dashboard.test.mjs",
+      "status": "passed"
+    },
+    {
+      "validation": "Python source compilation",
+      "artifact_path": "research/evaluations/explore-approaches/automation/execution_authorization.py",
+      "status": "passed"
+    }
+  ],
+  "limitations": [
+    "This is author-executed local mechanical evidence, not an independent exact-head review.",
+    "No scored provider cells, behavioral efficacy evaluation, or live model comparison ran.",
+    "No live GitHub protected-branch merge rehearsal or production installation ran.",
+    "This record does not authorize skill promotion, installation, provider execution, deployment, or adoption."
+  ]
+}

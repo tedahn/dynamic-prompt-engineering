@@ -9,6 +9,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -38,6 +39,7 @@ from .evaluation import (
     verify_evidence_manifest,
     verify_lifecycle_executable_binding,
 )
+from .execution_authorization import role_bindings
 
 
 REQUIRED_PERMISSIONS = {
@@ -152,8 +154,26 @@ def _tree_hashes(root: Path) -> dict[str, str]:
 def installation_lock(skills_root: Path, skill_name: str) -> Iterator[None]:
     _assert_safe_descendant(skills_root, skills_root / f".{skill_name}.install.lock")
     lock_path = skills_root / f".{skill_name}.install.lock"
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
+        descriptor = os.open(
+            lock_path,
+            os.O_CREAT
+            | os.O_RDWR
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+    except OSError as exc:
+        raise PipelineError(f"Unsafe or inaccessible installation lock: {lock_path}") from exc
+    try:
+        lock_stat = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(lock_stat.st_mode)
+            or lock_stat.st_uid != os.geteuid()
+            or lock_stat.st_nlink != 1
+        ):
+            raise PipelineError(f"Installation lock is not a private regular file: {lock_path}")
+        os.fchmod(descriptor, 0o600)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -840,6 +860,7 @@ def _validated_pr_snapshot(
     expected_state: str,
     automation_actor: Any,
     required_reviewer_logins: Any,
+    required_reviewer_identity: Any,
     required_checks: Sequence[str],
 ) -> dict[str, Any]:
     if snapshot.get("state") != expected_state:
@@ -854,6 +875,9 @@ def _validated_pr_snapshot(
     automation_login, allowed_reviewers = _reviewer_policy(
         automation_actor, required_reviewer_logins
     )
+    designated_reviewer = str(required_reviewer_identity or "").strip().casefold()
+    if not designated_reviewer or designated_reviewer not in allowed_reviewers:
+        raise PipelineError("Frozen PR reviewer is not present in the reviewer policy")
     author = ((snapshot.get("author") or {}).get("login") or "").casefold()
     excluded_reviewers = {author, automation_login}
     reviews = snapshot.get("reviews")
@@ -881,13 +905,13 @@ def _validated_pr_snapshot(
     approved_reviewers = sorted(
         login
         for normalized, (_, login, state, review_commit) in latest_reviews.items()
-        if normalized in allowed_reviewers
+        if normalized == designated_reviewer
         and normalized not in excluded_reviewers
         and state == "APPROVED"
         and review_commit == expected_head
     )
     if not approved_reviewers:
-        raise PipelineError("Pull request lacks a current approval from an allowed independent reviewer")
+        raise PipelineError("Pull request lacks a current approval from the frozen independent reviewer")
 
     checks = snapshot.get("statusCheckRollup")
     if not isinstance(checks, list) or not checks:
@@ -920,6 +944,7 @@ def _validated_pr_snapshot(
 
 def merge_reviewed_pr(pr_url: str, expected_head: str, config: dict[str, Any]) -> dict[str, Any]:
     promotion = config["promotion"]
+    roles = role_bindings(config, require_resolved=True)
     slug = promotion["repository_slug"]
     github_actor = verify_github_actor(config)
     fields = "state,headRefOid,baseRefName,reviewDecision,mergeStateStatus,url,mergeCommit,mergedAt,statusCheckRollup,reviews,author"
@@ -932,6 +957,7 @@ def merge_reviewed_pr(pr_url: str, expected_head: str, config: dict[str, Any]) -
         expected_state=expected_state,
         automation_actor=promotion.get("automation_actor"),
         required_reviewer_logins=promotion.get("required_reviewer_logins"),
+        required_reviewer_identity=roles["pr_reviewer"],
         required_checks=promotion.get("required_status_checks", ()),
     )
     if before.get("state") == "MERGED":
@@ -963,6 +989,7 @@ def merge_reviewed_pr(pr_url: str, expected_head: str, config: dict[str, Any]) -
         expected_state="MERGED",
         automation_actor=promotion.get("automation_actor"),
         required_reviewer_logins=promotion.get("required_reviewer_logins"),
+        required_reviewer_identity=roles["pr_reviewer"],
         required_checks=promotion.get("required_status_checks", ()),
     )
     merge_commit = (after.get("mergeCommit") or {}).get("oid")
@@ -1131,7 +1158,12 @@ def _stage_install_source(
         skill_name,
     ]
     try:
-        run_command(command)
+        installer_env_allowlist = tuple(installation.get("installer_env_allowlist", ()))
+        run_command(
+            command,
+            env={key: os.environ[key] for key in installer_env_allowlist if key in os.environ},
+            inherit_env=False,
+        )
         downloaded = installer_root / skill_name
         if installer_root.is_symlink() or not installer_root.is_dir():
             raise PipelineError("Skill-installer did not create a safe isolated destination")
@@ -1149,7 +1181,16 @@ def _stage_install_source(
         raise
 
 
-def run_canary(installed_skill: Path, run_dir: Path, config: dict[str, Any]) -> dict[str, Any]:
+def run_canary(
+    installed_skill: Path,
+    run_dir: Path,
+    config: dict[str, Any],
+    *,
+    execution_authorization: dict[str, Any] | None = None,
+    execution_authorization_sha256: str | None = None,
+) -> dict[str, Any]:
+    if execution_authorization is None or not execution_authorization_sha256:
+        raise PipelineError("Fresh provider-backed canary lacks signed execution authorization")
     skill_file = installed_skill / "SKILL.md"
     if not skill_file.is_file() or skill_file.is_symlink():
         raise PipelineError("Installed skill lacks a safe SKILL.md")
@@ -1160,6 +1201,12 @@ def run_canary(installed_skill: Path, run_dir: Path, config: dict[str, Any]) -> 
     validation = run_command(
         [str(part).replace("{skill}", str(installed_skill)) for part in validator_binding["argv"]],
         check=False,
+        env={
+            key: os.environ[key]
+            for key in tuple(config["installation"].get("validator_env_allowlist", ()))
+            if key in os.environ
+        },
+        inherit_env=False,
     )
     if validation.returncode != 0:
         raise PipelineError(f"Installed skill failed static validation: {validation.stderr or validation.stdout}")
@@ -1169,6 +1216,12 @@ def run_canary(installed_skill: Path, run_dir: Path, config: dict[str, Any]) -> 
         "installed_skill": str(installed_skill),
         "request": "Recommend approaches for a reversible workspace decision; do not implement any option.",
     }
+    if execution_authorization is not None:
+        request["plan_sha256"] = execution_authorization["run"]["plan_sha256"]
+        request["execution_authority"] = {
+            "authorization_sha256": execution_authorization_sha256,
+            "max_billed_tokens": execution_authorization["authority"]["max_billed_tokens_per_call"],
+        }
     canary_binding = verify_lifecycle_executable_binding(run_dir, config, "canary")
     result = invoke_adapter(
         canary_binding["argv"],
@@ -1178,6 +1231,9 @@ def run_canary(installed_skill: Path, run_dir: Path, config: dict[str, Any]) -> 
         max_transient_retries=0,
         max_output_bytes=int(config["evaluation"].get("max_output_bytes", 1_000_000)),
         env_allowlist=tuple(config["evaluation"].get("adapter_env_allowlist", ("PATH", "TMPDIR", "LANG", "LC_ALL"))),
+        execution_authorization=execution_authorization,
+        execution_authorization_sha256=execution_authorization_sha256,
+        execution_run_dir=run_dir if execution_authorization is not None else None,
     )
     if result["status"] != "completed" or result["response"].get("output", {}).get("passed") is not True:
         raise PipelineError("Fresh-process canary did not explicitly pass")
@@ -1537,6 +1593,276 @@ def atomic_install(
             expected_merge_commit=merge_commit,
             expected_destination=destination,
         )
+
+
+def _write_active_rollback_intent(
+    path: Path,
+    intent: dict[str, Any],
+    phase: str,
+) -> dict[str, Any]:
+    updated = {key: value for key, value in intent.items() if key != "record_sha256"}
+    updated["phase"] = phase
+    updated["updated_at"] = iso_now()
+    sealed = seal_record(updated)
+    _durable_write_json(path, sealed)
+    return sealed
+
+
+def run_active_rollback_canary(
+    destination: Path,
+    expected_hashes: dict[str, str],
+    run_dir: Path,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate the restored root state in a fresh, credential-minimized process."""
+
+    actual = _path_hashes(destination)
+    if actual != (expected_hashes or None):
+        raise PipelineError("Rollback canary observed a root state different from the recorded predecessor")
+    if not expected_hashes:
+        return {"status": "passed", "restored_previous": False, "file_hashes": {}}
+    validator_binding = verify_lifecycle_executable_binding(run_dir, config, "validator")
+    allowlist = tuple(config["installation"].get("validator_env_allowlist", ()))
+    validation = run_command(
+        [str(part).replace("{skill}", str(destination)) for part in validator_binding["argv"]],
+        check=False,
+        env={key: os.environ[key] for key in allowlist if key in os.environ},
+        inherit_env=False,
+    )
+    if validation.returncode != 0:
+        raise PipelineError(
+            f"Restored installation failed the rollback canary: {validation.stderr or validation.stdout}"
+        )
+    if _path_hashes(destination) != expected_hashes:
+        raise PipelineError("Restored installation changed while the rollback canary ran")
+    return {"status": "passed", "restored_previous": True, "file_hashes": expected_hashes}
+
+
+def rollback_active_install(
+    run_dir: Path,
+    config: dict[str, Any],
+    *,
+    operator: str,
+    reason: str,
+    rollback_canary: Callable[[Path, dict[str, str], Path, dict[str, Any]], dict[str, Any]] = run_active_rollback_canary,
+    fault_injector: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Quarantine an active candidate and atomically restore its recorded predecessor."""
+
+    roles = role_bindings(config, require_resolved=True)
+    if operator != roles["promotion_owner"]:
+        raise PipelineError("Active rollback operator does not match the frozen promotion owner")
+    if not isinstance(reason, str) or len(reason.strip()) < 8:
+        raise PipelineError("Active rollback requires a concrete operator reason")
+    reason = reason.strip()
+
+    installation = config["installation"]
+    skills_root = Path(installation["skills_root"]).expanduser()
+    skill_name = str(installation["skill_name"])
+    destination = skills_root / skill_name
+    backup_root = Path(installation["backup_directory"]).expanduser()
+    quarantine_root = Path(installation["quarantine_directory"]).expanduser()
+    ensure_private_directory(run_dir)
+    if any(path.is_symlink() for path in (skills_root, backup_root, quarantine_root)):
+        raise PipelineError("Active rollback control directories may not be symlinks")
+    if any(not path.is_dir() for path in (skills_root, backup_root, quarantine_root)):
+        raise PipelineError("Active rollback control directories are missing")
+    if (
+        skills_root.stat().st_dev != backup_root.stat().st_dev
+        or skills_root.stat().st_dev != quarantine_root.stat().st_dev
+    ):
+        raise PipelineError("Active rollback backup and quarantine must share the skills-root filesystem")
+    _assert_safe_descendant(skills_root, destination)
+
+    installation_record_path = run_dir / "installation-record.json"
+    install_intent_path = run_dir / "install-intent.json"
+    installation_record = load_immutable_record(installation_record_path, status="installed")
+    install_intent = load_immutable_record(install_intent_path)
+    if install_intent.get("phase") != "completed":
+        raise PipelineError("Active rollback requires a completed installation intent")
+    if installation_record.get("intent_sha256") != install_intent.get("record_sha256"):
+        raise PipelineError("Active rollback records do not share the completed installation intent")
+    if installation_record.get("destination") != str(destination):
+        raise PipelineError("Active rollback installation receipt targets another destination")
+
+    candidate_hashes = installation_record.get("file_hashes")
+    previous_hashes = install_intent.get("previous_file_hashes") or {}
+    previous_existed = bool(install_intent.get("previous_existed"))
+    if not isinstance(candidate_hashes, dict) or not isinstance(previous_hashes, dict):
+        raise PipelineError("Active rollback receipt lacks sealed filesystem hashes")
+    backup = Path(str(install_intent.get("backup", "")))
+    _assert_safe_descendant(backup_root, backup)
+    transaction_id = sha256_json(
+        {
+            "installation_record_sha256": installation_record["record_sha256"],
+            "install_intent_sha256": install_intent["record_sha256"],
+            "operator": operator,
+            "reason": reason,
+            "candidate_file_hashes": candidate_hashes,
+            "previous_file_hashes": previous_hashes,
+        }
+    )[:32]
+    quarantine = quarantine_root / f"{skill_name}-active-{transaction_id}"
+    _assert_safe_descendant(quarantine_root, quarantine)
+    intent_path = run_dir / "active-rollback-intent.json"
+    record_path = run_dir / "active-rollback-record.json"
+
+    with installation_lock(skills_root, skill_name):
+        if record_path.is_file() and not record_path.is_symlink():
+            record = load_immutable_record(record_path, status="rolled-back")
+            if (
+                record.get("transaction_id") != transaction_id
+                or record.get("operator") != operator
+                or record.get("reason") != reason
+                or record.get("quarantined_file_hashes") != candidate_hashes
+                or record.get("restored_file_hashes") != previous_hashes
+            ):
+                raise PipelineError("Completed active rollback record targets different sealed inputs")
+            if _path_hashes(destination) != (previous_hashes if previous_existed else None):
+                raise PipelineError("Root state changed after the completed active rollback")
+            if _path_hashes(quarantine) != candidate_hashes:
+                raise PipelineError("Quarantined active tree changed after rollback")
+            return record
+
+        expected_intent = {
+            "transaction_id": transaction_id,
+            "installation_record_sha256": installation_record["record_sha256"],
+            "install_intent_sha256": install_intent["record_sha256"],
+            "merge_commit": installation_record["merge_commit"],
+            "destination": str(destination),
+            "backup": str(backup),
+            "quarantine": str(quarantine),
+            "operator": operator,
+            "reason": reason,
+            "candidate_file_hashes": candidate_hashes,
+            "previous_existed": previous_existed,
+            "previous_file_hashes": previous_hashes,
+        }
+        if intent_path.is_file() and not intent_path.is_symlink():
+            intent = load_immutable_record(intent_path)
+            if any(intent.get(key) != value for key, value in expected_intent.items()):
+                raise PipelineError("Existing active rollback intent targets different sealed inputs")
+        else:
+            if intent_path.exists() or intent_path.is_symlink():
+                raise PipelineError("Active rollback intent path is unsafe")
+            if _path_hashes(destination) != candidate_hashes:
+                raise PipelineError("Active installation differs from its sealed receipt")
+            if _path_present(quarantine):
+                raise PipelineError("Active rollback quarantine exists without a durable intent")
+            if previous_existed and _path_hashes(backup) != previous_hashes:
+                raise PipelineError("Recorded predecessor backup is missing or changed")
+            intent = seal_record(
+                {
+                    "schema_version": "1.0",
+                    "created_at": iso_now(),
+                    "updated_at": iso_now(),
+                    **expected_intent,
+                    "phase": "prepared",
+                }
+            )
+            _durable_write_json(intent_path, intent)
+        if fault_injector is not None:
+            fault_injector("intent-written")
+
+        destination_hashes = _path_hashes(destination)
+        quarantine_hashes = _path_hashes(quarantine)
+        predecessor_already_restored = (
+            previous_existed
+            and destination_hashes == previous_hashes
+            and quarantine_hashes == candidate_hashes
+        )
+        if predecessor_already_restored and _path_present(backup):
+            raise PipelineError("Restored predecessor still has an unexpected backup tree")
+        if quarantine_hashes is None:
+            if destination_hashes != candidate_hashes:
+                raise PipelineError("Cannot reconcile active tree before quarantine")
+            intent = _write_active_rollback_intent(intent_path, intent, "quarantine-pending")
+            os.replace(destination, quarantine)
+            _fsync_directory(skills_root)
+            _fsync_directory(quarantine_root)
+            destination_hashes = _path_hashes(destination)
+            quarantine_hashes = _path_hashes(quarantine)
+        if (
+            not predecessor_already_restored
+            and (destination_hashes is not None or quarantine_hashes != candidate_hashes)
+        ):
+            raise PipelineError("Active tree was not atomically quarantined with its recorded hashes")
+        if not predecessor_already_restored:
+            intent = _write_active_rollback_intent(intent_path, intent, "candidate-quarantined")
+            if fault_injector is not None:
+                fault_injector("candidate-quarantined")
+
+        if previous_existed:
+            if not predecessor_already_restored:
+                destination_hashes = _path_hashes(destination)
+                backup_hashes = _path_hashes(backup)
+                if destination_hashes is None:
+                    if backup_hashes != previous_hashes:
+                        raise PipelineError("Cannot restore the sealed predecessor backup")
+                    intent = _write_active_rollback_intent(intent_path, intent, "restore-pending")
+                    os.replace(backup, destination)
+                    _fsync_directory(backup_root)
+                    _fsync_directory(skills_root)
+                elif destination_hashes != previous_hashes or backup_hashes is not None:
+                    raise PipelineError("Cannot reconcile the predecessor during active rollback recovery")
+                if _path_hashes(destination) != previous_hashes or _path_present(backup):
+                    raise PipelineError("Restored root differs from the sealed predecessor")
+        elif _path_present(destination):
+            raise PipelineError("Rollback of a new install left an unexpected active destination")
+        intent = _write_active_rollback_intent(intent_path, intent, "previous-restored")
+        if fault_injector is not None:
+            fault_injector("previous-restored")
+
+        canary_path = run_dir / "active-rollback-canary-record.json"
+        if canary_path.is_file() and not canary_path.is_symlink():
+            canary_record = load_immutable_record(canary_path, status="passed")
+            if canary_record.get("transaction_id") != transaction_id:
+                raise PipelineError("Rollback canary record targets another transaction")
+        else:
+            if canary_path.exists() or canary_path.is_symlink():
+                raise PipelineError("Rollback canary record path is unsafe")
+            intent = _write_active_rollback_intent(intent_path, intent, "rollback-canary-pending")
+            canary_result = rollback_canary(destination, previous_hashes, run_dir, config)
+            if canary_result.get("status") != "passed":
+                raise PipelineError("Rollback canary did not explicitly pass")
+            canary_record = seal_record(
+                {
+                    "schema_version": "1.0",
+                    "completed_at": iso_now(),
+                    "transaction_id": transaction_id,
+                    "status": "passed",
+                    "result": canary_result,
+                }
+            )
+            _durable_write_json(canary_path, canary_record)
+
+        if _path_hashes(destination) != (previous_hashes if previous_existed else None):
+            raise PipelineError("Root state changed after the rollback canary")
+        if _path_hashes(quarantine) != candidate_hashes:
+            raise PipelineError("Quarantined candidate changed during active rollback")
+        intent = _write_active_rollback_intent(intent_path, intent, "completed")
+        record = seal_record(
+            {
+                "schema_version": "1.0",
+                "rolled_back_at": iso_now(),
+                "transaction_id": transaction_id,
+                "active_rollback_intent_sha256": intent["record_sha256"],
+                "installation_record_sha256": installation_record["record_sha256"],
+                "install_intent_sha256": install_intent["record_sha256"],
+                "rollback_canary_record_sha256": canary_record["record_sha256"],
+                "merge_commit": installation_record["merge_commit"],
+                "destination": str(destination),
+                "quarantine": str(quarantine),
+                "operator": operator,
+                "reason": reason,
+                "quarantined_file_hashes": candidate_hashes,
+                "restored_previous": previous_existed,
+                "restored_file_hashes": previous_hashes,
+                "status": "rolled-back",
+            }
+        )
+        _durable_write_json(record_path, record)
+        return record
 
 
 def rehearse_rollback(run_dir: Path) -> dict[str, Any]:

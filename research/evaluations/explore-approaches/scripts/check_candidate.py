@@ -165,6 +165,8 @@ def validate(repo_root: Path) -> dict[str, Any]:
         "fixtures": repo_root / "research/evaluations/explore-approaches/fixtures/fixtures-v1.jsonl",
         "rubric": repo_root / "research/evaluations/explore-approaches/rubrics/rubric-v1.json",
         "approval_schema": repo_root / "research/evaluations/explore-approaches/schemas/promotion-approval.schema.json",
+        "execution_authorization_schema": repo_root / "research/evaluations/explore-approaches/schemas/execution-authorization.schema.json",
+        "provider_call_reservation_schema": repo_root / "research/evaluations/explore-approaches/schemas/provider-call-reservation.schema.json",
         "holdout_manifest_schema": repo_root / "research/evaluations/explore-approaches/schemas/holdout-manifest.schema.json",
         "pr_record_schema": repo_root / "research/evaluations/explore-approaches/schemas/pr-record.schema.json",
         "release_record_schema": repo_root / "research/evaluations/explore-approaches/schemas/release-record.schema.json",
@@ -172,6 +174,9 @@ def validate(repo_root: Path) -> dict[str, Any]:
         "installation_record_schema": repo_root / "research/evaluations/explore-approaches/schemas/installation-record.schema.json",
         "canary_record_schema": repo_root / "research/evaluations/explore-approaches/schemas/canary-record.schema.json",
         "rollback_record_schema": repo_root / "research/evaluations/explore-approaches/schemas/rollback-record.schema.json",
+        "active_rollback_intent_schema": repo_root / "research/evaluations/explore-approaches/schemas/active-rollback-intent.schema.json",
+        "active_rollback_canary_schema": repo_root / "research/evaluations/explore-approaches/schemas/active-rollback-canary-record.schema.json",
+        "active_rollback_record_schema": repo_root / "research/evaluations/explore-approaches/schemas/active-rollback-record.schema.json",
         "pr_record_schema": repo_root / "research/evaluations/explore-approaches/schemas/pr-record.schema.json",
         "release_record_schema": repo_root / "research/evaluations/explore-approaches/schemas/release-record.schema.json",
         "adapter_request_schema": repo_root / "research/evaluations/explore-approaches/schemas/adapter-request.schema.json",
@@ -184,6 +189,7 @@ def validate(repo_root: Path) -> dict[str, Any]:
         "pipeline_config": repo_root / "research/evaluations/explore-approaches/config/pipeline-v1.json",
         "automation_core": repo_root / "research/evaluations/explore-approaches/automation/core.py",
         "automation_evaluation": repo_root / "research/evaluations/explore-approaches/automation/evaluation.py",
+        "automation_execution_authorization": repo_root / "research/evaluations/explore-approaches/automation/execution_authorization.py",
         "automation_promotion": repo_root / "research/evaluations/explore-approaches/automation/promotion.py",
         "automation_orchestrator": repo_root / "research/evaluations/explore-approaches/automation/orchestrator.py",
         "automation_cli": repo_root / "research/evaluations/explore-approaches/scripts/automate_lifecycle.py",
@@ -307,7 +313,50 @@ def validate(repo_root: Path) -> dict[str, Any]:
     if "blind_map" not in set(evidence_artifacts.get("required", [])):
         errors.append("evidence-manifest schema omits the private blind-map artifact")
 
+    execution_schema = json.loads(paths["execution_authorization_schema"].read_text(encoding="utf-8"))
+    if not {
+        "authorization_id",
+        "authorized_by",
+        "authorized_at",
+        "expires_at",
+        "run",
+        "authority",
+        "signature",
+    }.issubset(set(execution_schema.get("required", []))):
+        errors.append("execution-authorization schema omits signed identity, expiry, run, or authority bindings")
+    run_required = set(execution_schema.get("properties", {}).get("run", {}).get("required", []))
+    if not {
+        "plan_sha256",
+        "config_sha256",
+        "candidate_manifest_sha256",
+        "subject_runtime_sha256",
+        "lifecycle_executables_sha256",
+        "roles_sha256",
+    }.issubset(run_required):
+        errors.append("execution-authorization schema omits frozen plan, runtime, role, or candidate bindings")
+    authority_required = set(execution_schema.get("properties", {}).get("authority", {}).get("required", []))
+    if not {
+        "max_subject_calls",
+        "max_grader_calls",
+        "max_canary_calls",
+        "max_total_calls",
+        "max_transient_retries",
+        "max_billed_tokens_per_call",
+        "max_total_billed_tokens",
+        "stop_conditions",
+    }.issubset(authority_required):
+        errors.append("execution-authorization schema omits bounded call, retry, token, or stop authority")
+
     for record_name in ("pr_record_schema", "release_record_schema", "install_intent_schema", "installation_record_schema", "canary_record_schema", "rollback_record_schema"):
+        record_schema = json.loads(paths[record_name].read_text(encoding="utf-8"))
+        if "record_sha256" not in set(record_schema.get("required", [])):
+            errors.append(f"{record_name} omits its immutable record hash")
+    for record_name in (
+        "provider_call_reservation_schema",
+        "active_rollback_intent_schema",
+        "active_rollback_canary_schema",
+        "active_rollback_record_schema",
+    ):
         record_schema = json.loads(paths[record_name].read_text(encoding="utf-8"))
         if "record_sha256" not in set(record_schema.get("required", [])):
             errors.append(f"{record_name} omits its immutable record hash")
@@ -361,6 +410,23 @@ def validate(repo_root: Path) -> dict[str, Any]:
     human_review_verification = config.get("human_review_verification", {})
     if human_review_verification.get("namespace") != "codex-skill-human-review":
         errors.append("pipeline config omits the dedicated signed human-review identity namespace")
+    execution_verification = config.get("execution_verification", {})
+    if execution_verification.get("namespace") != "codex-skill-provider-execution":
+        errors.append("pipeline config omits the dedicated signed provider-execution identity namespace")
+    expected_roles = {
+        "candidate_author",
+        "holdout_owner",
+        "human_reviewer_adjudicator",
+        "provider_execution_approver",
+        "promotion_owner",
+        "automation_actor",
+        "pr_reviewer",
+    }
+    roles = config.get("roles", {})
+    if set(roles) != expected_roles or len({str(value).casefold() for value in roles.values()}) != len(expected_roles):
+        errors.append("pipeline config omits unique frozen lifecycle role identities")
+    elif any(not isinstance(value, str) or "replace_with" not in value.casefold() for value in roles.values()):
+        errors.append("committed pipeline role identities must remain distinct non-live placeholders")
     if config.get("evaluation", {}).get("arms") != ["B00_RAW", "B01_MIN_ADVICE", "B02_PROFESSIONALIZE", "C01_EXPLORE"]:
         errors.append("pipeline config changes the frozen four-arm design")
     for key in ["subject_adapter_argv", "grader_adapter_argv", "canary_adapter_argv", "thresholds"]:
@@ -401,6 +467,22 @@ def validate(repo_root: Path) -> dict[str, Any]:
         errors.append("pipeline config omits concrete validator entrypoint and dependency provenance fields")
     if not isinstance(installation.get("installer_dependency_paths"), list):
         errors.append("pipeline config omits installer dependency provenance fields")
+    for key in ("installer_env_allowlist", "validator_env_allowlist"):
+        if not isinstance(installation.get(key), list) or not installation.get(key):
+            errors.append(f"pipeline config omits explicit {key}")
+    limits = config.get("provider_execution_limits", {})
+    for key in (
+        "max_subject_calls",
+        "max_grader_calls",
+        "max_canary_calls",
+        "max_total_calls",
+        "max_transient_retries",
+        "max_billed_tokens_per_call",
+        "max_total_billed_tokens",
+        "max_authorization_ttl_seconds",
+    ):
+        if not isinstance(limits.get(key), int) or isinstance(limits.get(key), bool) or limits[key] < 0:
+            errors.append(f"pipeline config omits bounded provider execution limit: {key}")
     if not REQUIRED_CONTENT_SAFETY_GATES.issubset(set(evaluation.get("critical_gate_ids", []))):
         errors.append("pipeline config does not classify both content-safety gates as critical")
     if not {"security", "privacy"}.issubset(set(evaluation.get("required_holdout_domains", []))):

@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-execution-authorization.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "authorization_id",
+    "decision",
+    "authorized_by",
+    "authorized_at",
+    "expires_at",
+    "run",
+    "authority",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "authorization_id": {"type": "string", "pattern": "^EXEC-[A-Za-z0-9-]+$"},
+    "decision": {"const": "execute-provider-calls"},
+    "authorized_by": {"type": "string", "minLength": 1},
+    "authorized_at": {"type": "string", "format": "date-time"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "plan_sha256",
+        "config_sha256",
+        "candidate_manifest_sha256",
+        "subject_runtime_sha256",
+        "lifecycle_executables_sha256",
+        "roles_sha256"
+      ],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1},
+        "plan_sha256": {"$ref": "#/$defs/sha256"},
+        "config_sha256": {"$ref": "#/$defs/sha256"},
+        "candidate_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "subject_runtime_sha256": {"$ref": "#/$defs/sha256"},
+        "lifecycle_executables_sha256": {"$ref": "#/$defs/sha256"},
+        "roles_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_subject_calls",
+        "max_grader_calls",
+        "max_canary_calls",
+        "max_total_calls",
+        "max_transient_retries",
+        "max_billed_tokens_per_call",
+        "max_total_billed_tokens",
+        "stop_conditions"
+      ],
+      "properties": {
+        "max_subject_calls": {"type": "integer", "minimum": 1},
+        "max_grader_calls": {"type": "integer", "minimum": 1},
+        "max_canary_calls": {"type": "integer", "minimum": 1},
+        "max_total_calls": {"type": "integer", "minimum": 1},
+        "max_transient_retries": {"type": "integer", "minimum": 0},
+        "max_billed_tokens_per_call": {"type": "integer", "minimum": 1},
+        "max_total_billed_tokens": {"type": "integer", "minimum": 1},
+        "stop_conditions": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 5,
+          "items": {
+            "enum": [
+              "authorization_expired",
+              "call_budget_exhausted",
+              "token_budget_exhausted",
+              "adapter_permanent_error",
+              "operator_cancelled"
+            ]
+          }
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "identity", "namespace", "value"],
+      "properties": {
+        "algorithm": {"const": "ssh-keygen-y"},
+        "identity": {"type": "string", "minLength": 1},
+        "namespace": {"const": "codex-skill-provider-execution"},
+        "value": {"type": "string", "minLength": 1}
+      }
+    },
+    "notes": {"type": "string"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

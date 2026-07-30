@@ -38,6 +38,7 @@ from .core import (
     sha256_file,
     sha256_json,
 )
+from .execution_authorization import reserve_provider_call, verify_billed_token_telemetry
 
 
 ARMS = ("B00_RAW", "B01_MIN_ADVICE", "B02_PROFESSIONALIZE", "C01_EXPLORE")
@@ -1397,12 +1398,17 @@ def _verify_result_cell(
     cell: dict[str, Any],
     result: dict[str, Any],
     expected_request: dict[str, Any],
+    expected_execution_authorization_sha256: str | None = None,
 ) -> None:
     result_body = {key: value for key, value in result.items() if key != "result_sha256"}
     if result.get("result_sha256") != sha256_json(result_body):
         raise PipelineError(f"Result envelope hash mismatch: {cell['cell_id']}")
     if result.get("plan_sha256") != plan["plan_sha256"] or result.get("cell") != cell:
         raise PipelineError(f"Result cell is not bound to the frozen plan: {cell['cell_id']}")
+    if result.get("execution_authorization_sha256") != expected_execution_authorization_sha256:
+        raise PipelineError(
+            f"Result cell is not bound to the signed execution authorization: {cell['cell_id']}"
+        )
     final_response = _verify_attempt_artifacts(
         result.get("attempts"),
         run_dir / "attempts" / cell["cell_id"],
@@ -1424,6 +1430,9 @@ def invoke_adapter(
     max_transient_retries: int,
     max_output_bytes: int = 1_000_000,
     env_allowlist: Sequence[str] = ("PATH", "TMPDIR", "LANG", "LC_ALL"),
+    execution_authorization: dict[str, Any] | None = None,
+    execution_authorization_sha256: str | None = None,
+    execution_run_dir: Path | None = None,
 ) -> dict[str, Any]:
     attempt_dir = attempt_dir.resolve()
     ensure_private_directory(attempt_dir, create=True, normalize=not attempt_dir.exists())
@@ -1436,8 +1445,26 @@ def invoke_adapter(
         response_path = invocation_dir / "response.json"
         request_id = f"REQ-{uuid.uuid4().hex}"
         request_record = {**request, "attempt": attempt, "request_id": request_id}
+        if execution_authorization is not None:
+            if not execution_authorization_sha256 or execution_run_dir is None:
+                raise PipelineError("Authorized provider execution lacks its persisted authority binding")
+            expected_authority = {
+                "authorization_sha256": execution_authorization_sha256,
+                "max_billed_tokens": execution_authorization["authority"]["max_billed_tokens_per_call"],
+            }
+            if request.get("execution_authority") != expected_authority:
+                raise PipelineError("Provider request does not carry the exact signed execution authority")
         atomic_write_json(request_path, request_record)
         request_sha256 = sha256_file(request_path)
+        if execution_authorization is not None:
+            reserve_provider_call(
+                execution_run_dir,
+                execution_authorization,
+                execution_authorization_sha256,
+                adapter_kind=str(request.get("adapter_kind", "")),
+                plan_sha256=str(request.get("plan_sha256", execution_authorization["run"]["plan_sha256"])),
+                request_sha256=request_sha256,
+            )
         started = time.monotonic()
         argv = _adapter_argv(template, request_path, response_path)
         try:
@@ -1505,6 +1532,15 @@ def invoke_adapter(
                 "status": "permanent_error",
                 "error": "completed adapter response must contain an output object",
             }
+        if response.get("status") == "completed" and execution_authorization is not None:
+            try:
+                verify_billed_token_telemetry(response, execution_authorization)
+            except PipelineError as exc:
+                response = {
+                    **error_prefix,
+                    "status": "permanent_error",
+                    "error": str(exc),
+                }
         if response.get("status") not in {"completed", "transient_error", "permanent_error"}:
             response = {
                 **error_prefix,
@@ -1545,7 +1581,21 @@ def invoke_adapter(
     raise AssertionError("unreachable")
 
 
-def run_subjects(repo_root: Path, run_dir: Path, config: dict[str, Any]) -> dict[str, int]:
+def _enforce_permanent_error_stop(result: dict[str, Any], *, context: str) -> None:
+    response = result.get("response")
+    response_status = response.get("status") if isinstance(response, dict) else None
+    if result.get("status") == "permanent_error" or response_status == "permanent_error":
+        raise PipelineError(f"Adapter permanent-error stop condition triggered: {context}")
+
+
+def run_subjects(
+    repo_root: Path,
+    run_dir: Path,
+    config: dict[str, Any],
+    *,
+    execution_authorization: dict[str, Any] | None = None,
+    execution_authorization_sha256: str | None = None,
+) -> dict[str, int]:
     plan, arm_materials = _verified_plan(run_dir, config)
     holdout_path = Path(plan["holdout"]["path"])
     tasks = _task_index(holdout_path)
@@ -1556,39 +1606,77 @@ def run_subjects(repo_root: Path, run_dir: Path, config: dict[str, Any]) -> dict
         target = result_dir / f"{cell['cell_id']}.json"
         task = tasks[cell["task_id"]]
         request = _subject_request(plan, cell, task, arm_materials, subject_runtime)
+        if execution_authorization is not None:
+            request = {
+                **request,
+                "execution_authority": {
+                    "authorization_sha256": execution_authorization_sha256,
+                    "max_billed_tokens": execution_authorization["authority"]["max_billed_tokens_per_call"],
+                },
+            }
         if target.is_symlink():
             raise PipelineError(f"Existing result cell is unsafe: {target}")
         if target.is_file():
             ensure_private_file(target)
             existing = load_json(target)
-            _verify_result_cell(run_dir, plan, cell, existing, request)
+            _verify_result_cell(
+                run_dir,
+                plan,
+                cell,
+                existing,
+                request,
+                execution_authorization_sha256,
+            )
             if existing.get("status") == "completed":
                 resumed_count += 1
             else:
                 failed_count += 1
+                _enforce_permanent_error_stop(
+                    existing,
+                    context=f"subject cell {cell['cell_id']}",
+                )
             continue
         result = invoke_adapter(
             config["evaluation"]["subject_adapter_argv"],
             request,
             run_dir / "attempts" / cell["cell_id"],
             timeout_seconds=float(config["evaluation"]["timeout_ms"]) / 1000,
-            max_transient_retries=int(config["evaluation"]["max_transient_retries"]),
+            max_transient_retries=int(
+                execution_authorization["authority"]["max_transient_retries"]
+                if execution_authorization is not None
+                else config["evaluation"]["max_transient_retries"]
+            ),
             max_output_bytes=int(config["evaluation"].get("max_output_bytes", 1_000_000)),
             env_allowlist=tuple(config["evaluation"].get("adapter_env_allowlist", ("PATH", "TMPDIR", "LANG", "LC_ALL"))),
+            execution_authorization=execution_authorization,
+            execution_authorization_sha256=execution_authorization_sha256,
+            execution_run_dir=run_dir if execution_authorization is not None else None,
         )
         result_body = {
             "schema_version": "1.0",
             "plan_sha256": plan["plan_sha256"],
             "cell": cell,
+            "execution_authorization_sha256": execution_authorization_sha256,
             **result,
         }
         result_record = {**result_body, "result_sha256": sha256_json(result_body)}
         atomic_write_json(target, result_record)
-        _verify_result_cell(run_dir, plan, cell, result_record, request)
+        _verify_result_cell(
+            run_dir,
+            plan,
+            cell,
+            result_record,
+            request,
+            execution_authorization_sha256,
+        )
         if result["status"] == "completed":
             completed_count += 1
         else:
             failed_count += 1
+            _enforce_permanent_error_stop(
+                result_record,
+                context=f"subject cell {cell['cell_id']}",
+            )
     return {"completed": completed_count, "failed": failed_count, "resumed": resumed_count}
 
 
@@ -1808,7 +1896,13 @@ def _verify_provisional_grade(
         raise PipelineError(f"Provisional grade status differs from its final attempt: {target}")
 
 
-def run_provisional_grading(run_dir: Path, config: dict[str, Any]) -> dict[str, int]:
+def run_provisional_grading(
+    run_dir: Path,
+    config: dict[str, Any],
+    *,
+    execution_authorization: dict[str, Any] | None = None,
+    execution_authorization_sha256: str | None = None,
+) -> dict[str, int]:
     plan, arm_materials = _verified_plan(run_dir, config)
     packet, _ = _verify_blind_bundle(run_dir, config, plan, arm_materials)
     blind_packet_sha256 = sha256_file(run_dir / "grading" / "blind-packet.jsonl")
@@ -1831,6 +1925,11 @@ def run_provisional_grading(run_dir: Path, config: dict[str, Any]) -> dict[str, 
                 "rubric_content_sha256": plan["rubric_content_sha256"],
                 "replicate": replicate,
             }
+            if execution_authorization is not None:
+                request["execution_authority"] = {
+                    "authorization_sha256": execution_authorization_sha256,
+                    "max_billed_tokens": execution_authorization["authority"]["max_billed_tokens_per_call"],
+                }
             target = run_dir / "grading" / "provisional" / packet_id / f"replicate-{replicate}.json"
             if target.is_symlink():
                 raise PipelineError(f"Existing provisional grade is unsafe: {target}")
@@ -1846,9 +1945,16 @@ def run_provisional_grading(run_dir: Path, config: dict[str, Any]) -> dict[str, 
                     request,
                     run_dir / "grading" / "attempts" / packet_id / str(replicate),
                     timeout_seconds=float(config["evaluation"]["timeout_ms"]) / 1000,
-                    max_transient_retries=int(config["evaluation"]["max_transient_retries"]),
+                    max_transient_retries=int(
+                        execution_authorization["authority"]["max_transient_retries"]
+                        if execution_authorization is not None
+                        else config["evaluation"]["max_transient_retries"]
+                    ),
                     max_output_bytes=int(config["evaluation"].get("max_output_bytes", 1_000_000)),
                     env_allowlist=tuple(config["evaluation"].get("adapter_env_allowlist", ("PATH", "TMPDIR", "LANG", "LC_ALL"))),
+                    execution_authorization=execution_authorization,
+                    execution_authorization_sha256=execution_authorization_sha256,
+                    execution_run_dir=run_dir if execution_authorization is not None else None,
                 )
                 result_body = {
                     "schema_version": "2.0",
@@ -1857,6 +1963,7 @@ def run_provisional_grading(run_dir: Path, config: dict[str, Any]) -> dict[str, 
                     "packet_id": packet_id,
                     "packet_sha256": packet_sha256,
                     "replicate": replicate,
+                    "execution_authorization_sha256": execution_authorization_sha256,
                     **result,
                 }
                 result_record = {**result_body, "result_sha256": sha256_json(result_body)}
@@ -1866,6 +1973,10 @@ def run_provisional_grading(run_dir: Path, config: dict[str, Any]) -> dict[str, 
                 )
             if result_record["status"] != "completed":
                 failures += 1
+                _enforce_permanent_error_stop(
+                    result_record,
+                    context=f"grader packet {packet_id} replicate {replicate}",
+                )
             output.append(result_record)
     _persist_exact_bytes(
         run_dir / "grading" / "provisional-grades.jsonl",

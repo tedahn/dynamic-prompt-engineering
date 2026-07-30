@@ -59,6 +59,10 @@ HASH_KEYS = {
     "workspace-after.json": "workspace_after_sha256",
     "workspace.diff": "workspace_diff_sha256",
 }
+ATTEMPT_HASH_KEYS = {
+    name: hash_key for name, hash_key in HASH_KEYS.items() if name != "prompt.txt"
+}
+ATTEMPT_HASH_KEYS["invocation-intent.json"] = "invocation_intent_sha256"
 DIMENSION_IDS = (
     "intent_fidelity",
     "constraint_preservation",
@@ -218,6 +222,27 @@ def safe_child(root: Path, relative: str) -> Path:
     return candidate
 
 
+def phase_evidence_seal(run_dir: Path, rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    cells: list[dict[str, Any]] = []
+    for row in rows:
+        cell_dir = safe_child(run_dir, str(row["cell_dir"]))
+        metadata_path = safe_child(cell_dir, "metadata.json")
+        if metadata_path.is_symlink() or not metadata_path.is_file():
+            raise GradeError(f"Missing regular cell metadata for seal: {row['cell_id']}")
+        cells.append(
+            {
+                "cell_id": row["cell_id"],
+                "metadata_path": str(PurePosixPath(str(row["cell_dir"])) / "metadata.json"),
+                "metadata_sha256": sha256_file(metadata_path),
+            }
+        )
+    return {
+        "algorithm": "sha256",
+        "cells": cells,
+        "seal_sha256": sha256_bytes((canonical_json(cells) + "\n").encode("utf-8")),
+    }
+
+
 def load_static_inputs() -> dict[str, Any]:
     experiment = load_json(EXPERIMENT_PATH)
     fixtures = load_jsonl(FIXTURES_PATH)
@@ -354,10 +379,14 @@ def load_completed_run(run_dir: Path, inputs: dict[str, Any] | None = None) -> d
         manifest.get("status") != "scored_complete"
         or not isinstance(scored_manifest, dict)
         or scored_manifest.get("status") != "completed"
+        or scored_manifest.get("expected_cells") != 45
         or scored_manifest.get("completed_cells") != 45
         or scored_manifest.get("failed_cells") != 0
+        or scored_manifest.get("status_counts") != {"completed": 45}
     ):
         raise GradeError("Run manifest does not record 45 successfully completed scored cells")
+    if scored_manifest.get("evidence_seal") != phase_evidence_seal(run_dir, plan):
+        raise GradeError("Run manifest scored evidence seal mismatch")
     cells: dict[str, dict[str, Any]] = {}
     models: set[str] = set()
     efforts: set[str] = set()
@@ -390,6 +419,48 @@ def load_completed_run(run_dir: Path, inputs: dict[str, Any] | None = None) -> d
             actual_hash = sha256_file(cell_dir / name)
             if hashes.get(hash_key) != actual_hash:
                 raise GradeError(f"Hash mismatch for {row['cell_id']}/{name}")
+        attempts = metadata.get("attempts")
+        if (
+            not isinstance(attempts, list)
+            or not attempts
+            or metadata.get("attempt_count") != len(attempts)
+            or metadata.get("retry_count") != len(attempts) - 1
+        ):
+            raise GradeError(f"Invalid attempt ledger for {row['cell_id']}")
+        max_retries = metadata.get("max_retries")
+        if not isinstance(max_retries, int) or max_retries < 0 or len(attempts) > max_retries + 1:
+            raise GradeError(f"Invalid retry budget for {row['cell_id']}")
+        attempt_root = safe_child(cell_dir, "attempts")
+        if not attempt_root.is_dir() or attempt_root.is_symlink():
+            raise GradeError(f"Missing regular attempt directory for {row['cell_id']}")
+        expected_attempt_names = [f"attempt-{number:02d}" for number in range(1, len(attempts) + 1)]
+        if sorted(path.name for path in attempt_root.iterdir()) != expected_attempt_names:
+            raise GradeError(f"Attempt directory membership mismatch for {row['cell_id']}")
+        for attempt_number, attempt in enumerate(attempts, 1):
+            if not isinstance(attempt, dict) or attempt.get("attempt") != attempt_number:
+                raise GradeError(f"Invalid attempt record for {row['cell_id']}/{attempt_number}")
+            if attempt_number < len(attempts) and attempt.get("status") != "transient_failed":
+                raise GradeError(f"Non-transient attempt was retried for {row['cell_id']}")
+            attempt_dir = safe_child(attempt_root, f"attempt-{attempt_number:02d}")
+            if not attempt_dir.is_dir() or attempt_dir.is_symlink():
+                raise GradeError(f"Unsafe attempt directory for {row['cell_id']}/{attempt_number}")
+            attempt_hashes = attempt.get("hashes")
+            if not isinstance(attempt_hashes, dict):
+                raise GradeError(f"Attempt hashes are missing for {row['cell_id']}/{attempt_number}")
+            for name, hash_key in ATTEMPT_HASH_KEYS.items():
+                path = safe_child(attempt_dir, name)
+                if not path.is_file() or path.is_symlink():
+                    raise GradeError(f"Missing attempt artifact for {row['cell_id']}/{name}")
+                if attempt_hashes.get(hash_key) != sha256_file(path):
+                    raise GradeError(f"Attempt hash mismatch for {row['cell_id']}/{name}")
+        final_attempt = attempts[-1]
+        if final_attempt.get("status") != "completed":
+            raise GradeError(f"Final attempt is not completed for {row['cell_id']}")
+        if metadata.get("completed_at") != final_attempt.get("completed_at"):
+            raise GradeError(f"Final attempt timestamp mismatch for {row['cell_id']}")
+        for hash_key in ATTEMPT_HASH_KEYS.values():
+            if hashes.get(hash_key) != final_attempt.get("hashes", {}).get(hash_key):
+                raise GradeError(f"Final attempt hash mismatch for {row['cell_id']}/{hash_key}")
         prompt_hash = sha256_file(cell_dir / "prompt.txt")
         if row.get("prompt_sha256") != prompt_hash:
             raise GradeError(f"Plan prompt hash mismatch for {row['cell_id']}")

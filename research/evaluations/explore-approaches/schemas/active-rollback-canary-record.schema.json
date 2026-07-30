@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-active-rollback-canary-record.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "completed_at",
+    "transaction_id",
+    "status",
+    "result",
+    "record_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "transaction_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "status": {"const": "passed"},
+    "result": {"type": "object"},
+    "record_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

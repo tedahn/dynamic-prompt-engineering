@@ -42,6 +42,12 @@ from automation.evaluation import (  # noqa: E402
     verify_frozen_holdout_signature,
 )
 from automation.event_store import EventStore  # noqa: E402
+from automation.execution_authorization import (  # noqa: E402
+    build_execution_authorization_template,
+    execution_authorization_payload,
+    role_bindings,
+    validate_execution_authorization,
+)
 from automation.orchestrator import Lifecycle  # noqa: E402
 from automation.promotion import (  # noqa: E402
     REQUIRED_PERMISSIONS,
@@ -55,6 +61,8 @@ from automation.promotion import (  # noqa: E402
     prepare_clean_promotion,
     push_and_open_pr,
     rehearse_rollback,
+    rollback_active_install,
+    run_canary,
     validate_approval,
     validate_installation_receipt,
     validate_prepared_promotion,
@@ -92,6 +100,7 @@ def _config(path: Path, run_dir: Path | None = None) -> dict[str, Any]:
     for settings_name in (
         "holdout_verification",
         "human_review_verification",
+        "execution_verification",
         "approval_verification",
     ):
         settings = value.get(settings_name, {})
@@ -122,6 +131,7 @@ def _config(path: Path, run_dir: Path | None = None) -> dict[str, Any]:
                     pass
                 else:
                     raise PipelineError("Allowed-signers trust file must remain outside repository and run data")
+    role_bindings(value, require_resolved=False)
     return value
 
 
@@ -183,6 +193,47 @@ def _require_signed_holdout_event(lifecycle: Lifecycle, plan: dict[str, Any]) ->
         raise PipelineError("Lifecycle SIGNED_HOLDOUT_VALIDATED event does not bind the frozen plan and blind key")
 
 
+def _execution_template(run_dir: Path, config: dict[str, Any]) -> dict[str, Any]:
+    plan, _ = _verified_plan(run_dir, config)
+    return build_execution_authorization_template(run_dir, config, plan)
+
+
+def _verify_execution_authorization(
+    run_dir: Path,
+    authorization_path: Path,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    plan, _ = _verified_plan(run_dir, config)
+    authorization = load_json(authorization_path)
+    validate_execution_authorization(authorization, config, plan)
+    return authorization
+
+
+def _verified_execution_authorization(
+    run_dir: Path,
+    authorization_path: Path | None,
+    config: dict[str, Any],
+) -> tuple[Path, dict[str, Any]]:
+    """Persist and revalidate the exact signed provider authority on every resume."""
+
+    persisted = run_dir / "verified-execution-authorization.json"
+    if authorization_path is not None:
+        authorization = _verify_execution_authorization(run_dir, authorization_path, config)
+        if persisted.exists():
+            if persisted.is_symlink() or not persisted.is_file():
+                raise PipelineError("Persisted execution authorization path is unsafe")
+            ensure_private_file(persisted)
+            if load_json(persisted) != authorization:
+                raise PipelineError("Provided execution authorization differs from the immutable persisted authority")
+        else:
+            atomic_write_json(persisted, authorization)
+    elif not persisted.is_file() or persisted.is_symlink():
+        raise PipelineError("Provider execution lacks the exact persisted signed authorization")
+    ensure_private_file(persisted)
+    authorization = _verify_execution_authorization(run_dir, persisted, config)
+    return persisted, authorization
+
+
 def _freeze(
     run_dir: Path,
     holdout: Path | None,
@@ -190,6 +241,7 @@ def _freeze(
     config: dict[str, Any],
     lifecycle: Lifecycle,
 ) -> dict[str, Any]:
+    role_bindings(config, require_resolved=True)
     manifest = _manifest(run_dir, config)
     if (run_dir / "plan.json").is_file():
         plan, _ = _verified_plan(run_dir, config)
@@ -246,13 +298,53 @@ def _git_head() -> str:
     return completed.stdout.strip()
 
 
-def _run_subject_stage(run_dir: Path, config: dict[str, Any], lifecycle: Lifecycle) -> None:
+def _run_subject_stage(
+    run_dir: Path,
+    config: dict[str, Any],
+    lifecycle: Lifecycle,
+    authorization_path: Path | None,
+) -> None:
     plan = load_json(run_dir / "plan.json")
+    persisted_authorization, authorization = _verified_execution_authorization(
+        run_dir, authorization_path, config
+    )
+    authorization_sha256 = sha256_file(persisted_authorization)
     if lifecycle.current["state"] == "holdout-ready":
-        _advance(lifecycle, "running", "EVALUATION_STARTED", {"run_id": plan["run_id"]})
+        _advance(
+            lifecycle,
+            "running",
+            "EVALUATION_STARTED",
+            {
+                "run_id": plan["run_id"],
+                "plan_sha256": plan["plan_sha256"],
+                "execution_authorization_sha256": authorization_sha256,
+            },
+        )
     elif lifecycle.current["state"] != "running":
         raise PipelineError(f"Cannot run subjects from lifecycle state {lifecycle.current['state']}")
-    result = run_subjects(REPO_ROOT, run_dir, config)
+    else:
+        matches = [
+            row
+            for row in lifecycle.store.events(lifecycle.stream)
+            if row["event_type"] == "EVALUATION_STARTED"
+        ]
+        if len(matches) != 1:
+            raise PipelineError("Lifecycle lacks one immutable EVALUATION_STARTED event")
+        payload = json.loads(matches[0]["payload_json"])
+        expected = {
+            "run_id": plan["run_id"],
+            "plan_sha256": plan["plan_sha256"],
+            "execution_authorization_sha256": authorization_sha256,
+        }
+        if payload != expected:
+            raise PipelineError("Lifecycle evaluation event is not bound to the persisted execution authorization")
+    result = run_subjects(
+        REPO_ROOT,
+        run_dir,
+        config,
+        execution_authorization=authorization,
+        execution_authorization_sha256=authorization_sha256,
+    )
     if result["failed"]:
         lifecycle.block("subject-cells-failed", result)
         raise PipelineError(f"Subject evaluation has {result['failed']} failed cells")
@@ -488,7 +580,12 @@ def _promote(run_dir: Path, approval_path: Path | None, config: dict[str, Any], 
 
 
 def _merge_and_install(
-    run_dir: Path, approval_path: Path | None, config: dict[str, Any], lifecycle: Lifecycle
+    run_dir: Path,
+    approval_path: Path | None,
+    config: dict[str, Any],
+    lifecycle: Lifecycle,
+    execution_authorization_path: Path | None = None,
+    execute: bool = False,
 ) -> dict[str, Any]:
     persisted_approval_path, approval = _verified_approval(run_dir, approval_path, config)
     approval_sha256 = sha256_file(persisted_approval_path)
@@ -561,8 +658,26 @@ def _merge_and_install(
     if lifecycle.current["state"] == "installing":
         _advance(lifecycle, "canary", "CANARY_STARTED", {"sha256": release["record_sha256"], "merge_commit": release["merge_commit"]})
     if lifecycle.current["state"] == "canary":
+        if not execute:
+            raise PipelineError("Fresh provider-backed canary requires --execute")
+        persisted_execution, execution_authorization = _verified_execution_authorization(
+            run_dir, execution_authorization_path, config
+        )
+        execution_authorization_sha256 = sha256_file(persisted_execution)
         try:
-            receipt = atomic_install(checkout, release["merge_commit"], run_dir, config)
+            receipt = atomic_install(
+                checkout,
+                release["merge_commit"],
+                run_dir,
+                config,
+                canary=lambda skill, active_run, active_config: run_canary(
+                    skill,
+                    active_run,
+                    active_config,
+                    execution_authorization=execution_authorization,
+                    execution_authorization_sha256=execution_authorization_sha256,
+                ),
+            )
         except PipelineError as exc:
             if (run_dir / "rollback-record.json").is_file():
                 _advance(lifecycle, "quarantined", "CANARY_FAILED_AND_QUARANTINED", {"id": str(exc)})
@@ -637,10 +752,12 @@ def command_freeze(args: argparse.Namespace) -> int:
 
 
 def command_run(args: argparse.Namespace) -> int:
+    if not args.execute:
+        raise PipelineError("run requires --execute and a signed provider execution authorization")
     config = _config(args.config, args.run_dir)
     store, lifecycle = _lifecycle(args.run_dir)
     try:
-        _run_subject_stage(args.run_dir, config, lifecycle)
+        _run_subject_stage(args.run_dir, config, lifecycle, args.execution_authorization)
         packet = build_blind_bundle(args.run_dir, config)
         print(json.dumps({"state": lifecycle.current["state"], **packet}, sort_keys=True))
     finally:
@@ -649,8 +766,54 @@ def command_run(args: argparse.Namespace) -> int:
 
 
 def command_grade(args: argparse.Namespace) -> int:
+    if not args.execute:
+        raise PipelineError("grade requires --execute and a signed provider execution authorization")
     config = _config(args.config, args.run_dir)
-    print(json.dumps(run_provisional_grading(args.run_dir, config), sort_keys=True))
+    persisted, authorization = _verified_execution_authorization(
+        args.run_dir, args.execution_authorization, config
+    )
+    print(
+        json.dumps(
+            run_provisional_grading(
+                args.run_dir,
+                config,
+                execution_authorization=authorization,
+                execution_authorization_sha256=sha256_file(persisted),
+            ),
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_execution_authorization_template(args: argparse.Namespace) -> int:
+    config = _config(args.config, args.run_dir)
+    value = _execution_template(args.run_dir, config)
+    atomic_write_json(args.output, value)
+    print(json.dumps({"unsigned_template": str(args.output)}, sort_keys=True))
+    return 0
+
+
+def command_execution_authorization_payload(args: argparse.Namespace) -> int:
+    authorization = load_json(args.authorization)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_bytes(execution_authorization_payload(authorization))
+    print(json.dumps({"sign_this_file": str(args.output)}, sort_keys=True))
+    return 0
+
+
+def command_verify_execution_authorization(args: argparse.Namespace) -> int:
+    config = _config(args.config, args.run_dir)
+    _verify_execution_authorization(args.run_dir, args.execution_authorization, config)
+    print(
+        json.dumps(
+            {
+                "execution_authorization": "verified",
+                "sha256": sha256_file(args.execution_authorization),
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -718,11 +881,68 @@ def command_promote(args: argparse.Namespace) -> int:
 def command_merge_install(args: argparse.Namespace) -> int:
     if not args.apply:
         raise PipelineError("merge-install requires --apply")
+    if not args.execute:
+        raise PipelineError("merge-install requires --execute for the fresh provider-backed canary")
+    config = _config(args.config, args.run_dir)
+    _verified_execution_authorization(args.run_dir, args.execution_authorization, config)
+    store, lifecycle = _lifecycle(args.run_dir)
+    try:
+        result = _merge_and_install(
+            args.run_dir,
+            args.approval,
+            config,
+            lifecycle,
+            args.execution_authorization,
+            args.execute,
+        )
+        print(json.dumps({"state": lifecycle.current["state"], "installation": result}, indent=2, sort_keys=True))
+    finally:
+        store.close()
+    return 0
+
+
+def command_rollback_active(args: argparse.Namespace) -> int:
+    if not args.apply:
+        raise PipelineError("rollback-active requires --apply")
     config = _config(args.config, args.run_dir)
     store, lifecycle = _lifecycle(args.run_dir)
     try:
-        result = _merge_and_install(args.run_dir, args.approval, config, lifecycle)
-        print(json.dumps({"state": lifecycle.current["state"], "installation": result}, indent=2, sort_keys=True))
+        if lifecycle.current["state"] not in {"active", "quarantined", "rolled-back"}:
+            raise PipelineError(
+                f"Cannot roll back an active installation from lifecycle state {lifecycle.current['state']}"
+            )
+        record = rollback_active_install(
+            args.run_dir,
+            config,
+            operator=args.operator,
+            reason=args.reason,
+        )
+        if lifecycle.current["state"] == "active":
+            _advance(
+                lifecycle,
+                "quarantined",
+                "ACTIVE_INSTALLATION_QUARANTINED",
+                {
+                    "sha256": record["active_rollback_intent_sha256"],
+                    "id": record["transaction_id"],
+                },
+            )
+        if lifecycle.current["state"] == "quarantined":
+            _advance(
+                lifecycle,
+                "rolled-back",
+                "ACTIVE_ROLLBACK_COMPLETED",
+                {"sha256": record["record_sha256"], "id": record["transaction_id"]},
+            )
+        elif lifecycle.current["state"] == "rolled-back":
+            _require_event_hash(lifecycle, "ACTIVE_ROLLBACK_COMPLETED", record["record_sha256"])
+        print(
+            json.dumps(
+                {"state": lifecycle.current["state"], "rollback": record},
+                indent=2,
+                sort_keys=True,
+            )
+        )
     finally:
         store.close()
     return 0
@@ -740,13 +960,51 @@ def command_auto(args: argparse.Namespace) -> int:
             _freeze(args.run_dir, args.holdout, args.holdout_manifest, config, lifecycle)
             state = lifecycle.current["state"]
         if state in {"holdout-ready", "running"}:
-            _run_subject_stage(args.run_dir, config, lifecycle)
+            if not args.execute or (
+                args.execution_authorization is None
+                and not (args.run_dir / "verified-execution-authorization.json").is_file()
+            ):
+                template_path = args.run_dir / "execution-authorization.unsigned.json"
+                if not template_path.is_file():
+                    atomic_write_json(template_path, _execution_template(args.run_dir, config))
+                lifecycle.block(
+                    "signed-provider-execution-authorization-and-execute-flag-required",
+                    {"template": str(template_path)},
+                )
+                print(
+                    json.dumps(
+                        {
+                            "state": lifecycle.current["state"],
+                            "next_gate": "signed-provider-execution-authorization",
+                            "template": str(template_path),
+                        },
+                        sort_keys=True,
+                    )
+                )
+                return 20
+            _run_subject_stage(
+                args.run_dir,
+                config,
+                lifecycle,
+                args.execution_authorization,
+            )
             state = lifecycle.current["state"]
         if state == "grading":
             if not (args.run_dir / "grading" / "blind-packet.jsonl").is_file():
                 build_blind_bundle(args.run_dir, config)
             if config["evaluation"].get("grader_adapter_argv") and not (args.run_dir / "grading" / "provisional-grades.jsonl").is_file():
-                run_provisional_grading(args.run_dir, config)
+                if not args.execute:
+                    lifecycle.block("execute-flag-required-for-provider-grading")
+                    return 20
+                persisted_execution, execution_authorization = _verified_execution_authorization(
+                    args.run_dir, args.execution_authorization, config
+                )
+                run_provisional_grading(
+                    args.run_dir,
+                    config,
+                    execution_authorization=execution_authorization,
+                    execution_authorization_sha256=sha256_file(persisted_execution),
+                )
             if args.final_grades is None or args.human_review is None:
                 lifecycle.block("human-final-grades-and-review-required")
                 print(json.dumps({"state": lifecycle.current["state"], "next_gate": "human-final-grades-and-review"}, sort_keys=True))
@@ -788,12 +1046,29 @@ def command_auto(args: argparse.Namespace) -> int:
             _promote(args.run_dir, args.approval, config, lifecycle, True)
             state = lifecycle.current["state"]
         if state == "pr-open":
-            if not args.apply:
+            if (
+                not args.apply
+                or not args.execute
+                or (
+                    args.execution_authorization is None
+                    and not (args.run_dir / "verified-execution-authorization.json").is_file()
+                )
+            ):
+                lifecycle.block(
+                    "apply-signed-execution-authorization-and-execute-required-for-merge-and-provider-canary"
+                )
                 return 20
             deadline = time.monotonic() + max(0, args.max_review_wait_seconds)
             while True:
                 try:
-                    result = _merge_and_install(args.run_dir, args.approval, config, lifecycle)
+                    result = _merge_and_install(
+                        args.run_dir,
+                        args.approval,
+                        config,
+                        lifecycle,
+                        args.execution_authorization,
+                        args.execute,
+                    )
                     print(json.dumps({"state": lifecycle.current["state"], "installation": result}, sort_keys=True))
                     return 0
                 except PipelineError as exc:
@@ -807,10 +1082,21 @@ def command_auto(args: argparse.Namespace) -> int:
                         return 20
                     time.sleep(max(1, args.poll_seconds))
         if state in {"merged", "installing", "canary"}:
-            if (args.approval is None and not (args.run_dir / "verified-approval.json").is_file()) or not args.apply:
-                lifecycle.block("signed-approval-and-apply-required-for-install-recovery")
+            if (
+                (args.approval is None and not (args.run_dir / "verified-approval.json").is_file())
+                or not args.apply
+                or not args.execute
+            ):
+                lifecycle.block("signed-approval-apply-and-execute-required-for-install-recovery")
                 return 20
-            result = _merge_and_install(args.run_dir, args.approval, config, lifecycle)
+            result = _merge_and_install(
+                args.run_dir,
+                args.approval,
+                config,
+                lifecycle,
+                args.execution_authorization,
+                args.execute,
+            )
             print(json.dumps({"state": lifecycle.current["state"], "installation": result}, sort_keys=True))
             return 0
         if state == "active":
@@ -850,11 +1136,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser("run")
     run.add_argument("--run-dir", type=_path, required=True)
+    run.add_argument("--execution-authorization", type=_path)
+    run.add_argument("--execute", action="store_true")
     run.set_defaults(function=command_run)
 
     grade = subparsers.add_parser("grade")
     grade.add_argument("--run-dir", type=_path, required=True)
+    grade.add_argument("--execution-authorization", type=_path)
+    grade.add_argument("--execute", action="store_true")
     grade.set_defaults(function=command_grade)
+
+    execution_template = subparsers.add_parser("execution-authorization-template")
+    execution_template.add_argument("--run-dir", type=_path, required=True)
+    execution_template.add_argument("--output", type=_path, required=True)
+    execution_template.set_defaults(function=command_execution_authorization_template)
+
+    execution_payload = subparsers.add_parser("execution-authorization-payload")
+    execution_payload.add_argument("--authorization", type=_path, required=True)
+    execution_payload.add_argument("--output", type=_path, required=True)
+    execution_payload.set_defaults(function=command_execution_authorization_payload)
+
+    verify_execution = subparsers.add_parser("verify-execution-authorization")
+    verify_execution.add_argument("--run-dir", type=_path, required=True)
+    verify_execution.add_argument("--execution-authorization", type=_path, required=True)
+    verify_execution.set_defaults(function=command_verify_execution_authorization)
 
     summarize = subparsers.add_parser("summarize")
     summarize.add_argument("--run-dir", type=_path, required=True)
@@ -896,8 +1201,17 @@ def build_parser() -> argparse.ArgumentParser:
     merge_install = subparsers.add_parser("merge-install")
     merge_install.add_argument("--run-dir", type=_path, required=True)
     merge_install.add_argument("--approval", type=_path, required=True)
+    merge_install.add_argument("--execution-authorization", type=_path)
     merge_install.add_argument("--apply", action="store_true")
+    merge_install.add_argument("--execute", action="store_true")
     merge_install.set_defaults(function=command_merge_install)
+
+    rollback_active = subparsers.add_parser("rollback-active")
+    rollback_active.add_argument("--run-dir", type=_path, required=True)
+    rollback_active.add_argument("--operator", required=True)
+    rollback_active.add_argument("--reason", required=True)
+    rollback_active.add_argument("--apply", action="store_true")
+    rollback_active.set_defaults(function=command_rollback_active)
 
     auto = subparsers.add_parser("auto")
     auto.add_argument("--run-dir", type=_path, required=True)
@@ -906,6 +1220,8 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--final-grades", type=_path)
     auto.add_argument("--human-review", type=_path)
     auto.add_argument("--approval", type=_path)
+    auto.add_argument("--execution-authorization", type=_path)
+    auto.add_argument("--execute", action="store_true")
     auto.add_argument("--apply", action="store_true")
     auto.add_argument("--poll-seconds", type=int, default=30)
     auto.add_argument("--max-review-wait-seconds", type=int, default=0)

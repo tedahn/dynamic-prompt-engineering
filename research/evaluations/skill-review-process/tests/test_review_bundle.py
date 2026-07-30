@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -11,6 +12,8 @@ from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[4] / "skills" / "review-skill-candidate" / "scripts" / "review_bundle.py"
+REPO_ROOT = SCRIPT.parents[3]
+FROZEN_PR001 = REPO_ROOT / "research" / "reviews" / "PR-001"
 SPEC = importlib.util.spec_from_file_location("review_bundle", SCRIPT)
 assert SPEC and SPEC.loader
 REVIEW = importlib.util.module_from_spec(SPEC)
@@ -34,6 +37,7 @@ class ReviewBundleTests(unittest.TestCase):
         self.base = self._git("rev-parse", "HEAD").strip()
         self._write("app.py", "VALUE = 2\nSAFE = True\n")
         self._write("skill.md", "# Candidate\n\nBehavioral efficacy is unknown.\n")
+        self._write("test-results.json", '{"failed": 0, "passed": 1}\n')
         self._git("add", ".")
         self._git("commit", "-m", "candidate")
         self.head = self._git("rev-parse", "HEAD").strip()
@@ -53,19 +57,53 @@ class ReviewBundleTests(unittest.TestCase):
             "init", "--repo-root", str(self.repo), "--repository", "example/repo",
             "--base", self.base, "--head", self.head, "--pr-number", "1",
             "--decision-owner", "Example Human", "--requested-by", "test",
+            "--packet-author-id", "candidate-author-1",
+            "--packet-author-id", "packet-author-2",
             "--output", str(self.bundle), "--review-id", "TEST-001",
             "--built-at", "2026-07-30T00:00:00Z", "--policy", "policy.md",
-            "--validation", "unit test baseline passed",
+            "--validation-record", json.dumps({
+                "claim": "1 unit test passed",
+                "artifact_path": "test-results.json",
+            }),
         ])
         self.assertEqual(result, 0)
 
     def _manifest(self) -> dict:
         return json.loads((self.bundle / "manifest.json").read_text())
 
+    def _init_args(
+        self,
+        output: Path,
+        validation: list[str] | None = None,
+        packet_author_ids: list[str] | None = None,
+    ) -> argparse.Namespace:
+        return argparse.Namespace(
+            repo_root=str(self.repo),
+            repository="example/repo",
+            base=self.base,
+            head=self.head,
+            pr_number=1,
+            decision_owner="Example Human",
+            requested_by="test",
+            packet_author_id=packet_author_ids or ["candidate-author-1", "packet-author-2"],
+            output=str(output),
+            review_id="TEST-NEW",
+            built_at="2026-07-30T00:00:00Z",
+            policy=["policy.md"],
+            artifact=[],
+            validation=validation or [],
+        )
+
+    def _rehash_manifest_in_packet_index(self) -> None:
+        index_path = self.bundle / "packet-index.json"
+        index = json.loads(index_path.read_text())
+        index["files"]["manifest.json"] = REVIEW.sha256_file(self.bundle / "manifest.json")
+        REVIEW.write_json(index_path, index)
+
     def _submission(self, role: str, reviewer_id: str, findings: list[dict] | None = None) -> dict:
         manifest = self._manifest()
         return {
-            "schema_version": "1.0",
+            "schema_version": REVIEW.SCHEMA_VERSION,
             "review_id": manifest["review_id"],
             "target": manifest["target"],
             "reviewer": {
@@ -129,6 +167,7 @@ class ReviewBundleTests(unittest.TestCase):
         self,
         dispositions: list[dict] | None = None,
         gate: str = "eligible_for_human_decision",
+        adjudicator_id: str = "adjudicator-1",
     ) -> dict:
         manifest = self._manifest()
         hashes = {
@@ -136,11 +175,12 @@ class ReviewBundleTests(unittest.TestCase):
             for role in REVIEW.REQUIRED_ROLES
         }
         return {
-            "schema_version": "1.0", "review_id": manifest["review_id"],
+            "schema_version": REVIEW.SCHEMA_VERSION, "review_id": manifest["review_id"],
             "target": manifest["target"],
             "adjudicator": {
-                "adjudicator_id": "adjudicator-1", "surface": "test", "model": None,
+                "adjudicator_id": adjudicator_id, "surface": "test", "model": None,
                 "adjudicated_at": "2026-07-30T00:02:00Z", "independent_from_authors": True,
+                "independent_from_reviewers": True,
             },
             "submission_hashes": hashes, "finding_dispositions": dispositions or [],
             "conflicts": [], "merge_gate": gate, "rationale": "Evidence checked.",
@@ -161,7 +201,7 @@ class ReviewBundleTests(unittest.TestCase):
     def _human_decision(self) -> dict:
         manifest = self._manifest()
         return {
-            "schema_version": "1.0", "review_id": manifest["review_id"],
+            "schema_version": REVIEW.SCHEMA_VERSION, "review_id": manifest["review_id"],
             "target": manifest["target"], "decision_owner": manifest["decision_owner"],
             "actor_type": "human", "decision": "approved",
             "decided_at": "2026-07-30T00:03:00Z", "rationale": "Exact target reviewed.",
@@ -178,21 +218,91 @@ class ReviewBundleTests(unittest.TestCase):
 
     def test_init_freezes_target_and_creates_role_packets(self) -> None:
         manifest = self._manifest()
+        self.assertEqual(manifest["schema_version"], "1.1")
         self.assertEqual(manifest["target"]["base_sha"], self.base)
         self.assertEqual(manifest["target"]["head_sha"], self.head)
         self.assertEqual(manifest["required_roles"], list(REVIEW.REQUIRED_ROLES))
+        validation = manifest["validation_records"]
+        self.assertEqual(len(validation), 1)
+        evidence = {row["path"]: row for row in manifest["evidence_index"]}
+        self.assertEqual(validation[0]["artifact_path"], "test-results.json")
+        self.assertEqual(
+            validation[0]["artifact_sha256"], evidence["test-results.json"]["head_sha256"]
+        )
         for role in REVIEW.REQUIRED_ROLES:
             self.assertTrue((self.bundle / "assignments" / f"{role}.md").is_file())
         self.assertTrue((self.bundle / "packet-index.json").is_file())
 
+    def test_frozen_pr001_schema_1_0_validates_under_legacy_contract(self) -> None:
+        result = REVIEW.validate_bundle(argparse.Namespace(
+            repo_root=str(REPO_ROOT), bundle=str(FROZEN_PR001), write_summary=False
+        ))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["schema_version"], "1.0")
+        self.assertEqual(result["review_id"], "PR-001-8371f0f9634b")
+        self.assertEqual(result["computed_merge_gate"], "changes_required")
+
+    def test_schema_1_0_cannot_authorize_a_new_target(self) -> None:
+        legacy = self.root / "forged-legacy"
+        shutil.copytree(FROZEN_PR001, legacy)
+        manifest_path = legacy / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["target"] = REVIEW.target_record(self.repo, self.base, self.head)
+        REVIEW.write_json(manifest_path, manifest)
+        with self.assertRaisesRegex(
+            REVIEW.ReviewError,
+            "Legacy schema_version 1.0 cannot authorize a different packet or target",
+        ):
+            REVIEW.validate_bundle(argparse.Namespace(
+                repo_root=str(self.repo), bundle=str(legacy), write_summary=False
+            ))
+
+    def test_init_rejects_unbound_validation_count_claim(self) -> None:
+        with self.assertRaisesRegex(
+            REVIEW.ReviewError, "Validation record must be JSON with claim and artifact_path"
+        ):
+            REVIEW.init_bundle(self._init_args(
+                self.root / "unbound-validation", validation=["32 tests passed"]
+            ))
+
+    def test_init_rejects_validation_artifact_outside_evidence_index(self) -> None:
+        record = json.dumps({
+            "claim": "32 tests passed", "artifact_path": "missing-results.json"
+        })
+        with self.assertRaisesRegex(
+            REVIEW.ReviewError, "Validation artifact is not present in evidence_index"
+        ):
+            REVIEW.init_bundle(self._init_args(
+                self.root / "missing-validation-artifact", validation=[record]
+            ))
+
+    def test_validator_rejects_unbound_count_claim_in_manifest(self) -> None:
+        manifest = self._manifest()
+        manifest["validation_records"] = ["32 tests passed"]
+        REVIEW.write_json(self.bundle / "manifest.json", manifest)
+        self._rehash_manifest_in_packet_index()
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            "validation record 1 is not a hash-bound object", result["errors"]
+        )
+
+    def test_validator_rejects_validation_hash_not_bound_to_evidence(self) -> None:
+        manifest = self._manifest()
+        manifest["validation_records"][0]["artifact_sha256"] = "0" * 64
+        REVIEW.write_json(self.bundle / "manifest.json", manifest)
+        self._rehash_manifest_in_packet_index()
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            "validation record 1 artifact_sha256 does not match evidence_index: "
+            "test-results.json",
+            result["errors"],
+        )
+
     def test_init_refuses_to_overwrite_preserved_bundle(self) -> None:
         with self.assertRaises(REVIEW.ReviewError):
-            REVIEW.init_bundle(argparse.Namespace(
-                repo_root=str(self.repo), repository="example/repo", base=self.base,
-                head=self.head, pr_number=1, decision_owner="Example Human",
-                requested_by="test", output=str(self.bundle), review_id="TEST-002",
-                built_at="2026-07-30T00:00:00Z", policy=[], artifact=[], validation=[],
-            ))
+            REVIEW.init_bundle(self._init_args(self.bundle))
 
     def test_submission_schema_rejects_missing_and_additional_properties(self) -> None:
         base = self._submission("evidence-methodology", "reviewer-1", [self._finding()])
@@ -413,6 +523,58 @@ class ReviewBundleTests(unittest.TestCase):
             configured = REVIEW.target_record(self.repo, self.base, self.head)
         self.assertEqual(configured, baseline)
 
+    def test_git_operations_ignore_foreign_repository_routing_environment(self) -> None:
+        baseline_target = REVIEW.target_record(self.repo, self.base, self.head)
+        baseline_changed = REVIEW.changed_files(self.repo, self.base, self.head)
+        baseline_blob = REVIEW.blob_at(self.repo, self.head, "app.py")
+
+        foreign = self.root / "foreign"
+        foreign.mkdir()
+
+        def foreign_git(*args: str) -> str:
+            return subprocess.check_output(["git", *args], cwd=foreign, text=True)
+
+        foreign_git("init", "-b", "main")
+        foreign_git("config", "user.email", "foreign@example.invalid")
+        foreign_git("config", "user.name", "Foreign Author")
+        (foreign / "foreign.txt").write_text("base\n", encoding="utf-8")
+        foreign_git("add", ".")
+        foreign_git("commit", "-m", "foreign base")
+        foreign_base = foreign_git("rev-parse", "HEAD").strip()
+        (foreign / "foreign.txt").write_text("head\n", encoding="utf-8")
+        foreign_git("add", ".")
+        foreign_git("commit", "-m", "foreign head")
+        foreign_head = foreign_git("rev-parse", "HEAD").strip()
+
+        hostile_environment = {
+            "GIT_DIR": str(foreign / ".git"),
+            "GIT_WORK_TREE": str(foreign),
+            "GIT_COMMON_DIR": str(foreign / ".git"),
+            "GIT_OBJECT_DIRECTORY": str(foreign / ".git" / "objects"),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(foreign / ".git" / "objects"),
+            "GIT_INDEX_FILE": str(foreign / ".git" / "index"),
+            "GIT_NAMESPACE": "foreign",
+            "GIT_SHALLOW_FILE": str(foreign / ".git" / "shallow"),
+            "GIT_CEILING_DIRECTORIES": str(self.root),
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM": "1",
+            "GIT_ATTR_SOURCE": foreign_head,
+            "GIT_REPLACE_REF_BASE": "refs/foreign-replace/",
+        }
+        sanitized = REVIEW.sanitized_git_environment(hostile_environment)
+        for variable in hostile_environment:
+            self.assertNotIn(variable, sanitized)
+
+        with mock.patch.dict(REVIEW.os.environ, hostile_environment, clear=False):
+            self.assertEqual(
+                REVIEW.target_record(self.repo, self.base, self.head), baseline_target
+            )
+            self.assertEqual(
+                REVIEW.changed_files(self.repo, self.base, self.head), baseline_changed
+            )
+            self.assertEqual(REVIEW.blob_at(self.repo, self.head, "app.py"), baseline_blob)
+            with self.assertRaisesRegex(REVIEW.ReviewError, "rev-parse"):
+                REVIEW.target_record(self.repo, foreign_base, foreign_head)
+
     def test_blob_at_distinguishes_missing_paths_from_git_failures(self) -> None:
         self.assertEqual(REVIEW.blob_at(self.repo, self.head, "app.py"), b"VALUE = 2\nSAFE = True\n")
         self.assertIsNone(REVIEW.blob_at(self.repo, self.head, "missing.py"))
@@ -491,6 +653,20 @@ class ReviewBundleTests(unittest.TestCase):
         result = self._validate()
         self.assertFalse(result["ok"])
         self.assertIn("reviewer identities are not unique", result["errors"])
+
+    def test_reviewer_cannot_adjudicate_same_packet(self) -> None:
+        self._write_reviews()
+        self._write_adjudication(value=self._adjudication(adjudicator_id=" REVIEWER-1 "))
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertIn("adjudicator identity matches a reviewer identity", result["errors"])
+
+    def test_packet_author_cannot_adjudicate_same_packet(self) -> None:
+        self._write_reviews()
+        self._write_adjudication(value=self._adjudication(adjudicator_id=" PACKET-AUTHOR-2 "))
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertIn("adjudicator identity matches a packet author identity", result["errors"])
 
     def test_stale_submission_hash_blocks_adjudication(self) -> None:
         self._write_reviews()

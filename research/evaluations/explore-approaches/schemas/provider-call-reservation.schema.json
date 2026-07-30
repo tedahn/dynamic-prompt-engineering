@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "explore-approaches-provider-call-reservation.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "reservation_id",
+    "reserved_at",
+    "execution_authorization_sha256",
+    "adapter_kind",
+    "plan_sha256",
+    "request_sha256",
+    "max_billed_tokens",
+    "status",
+    "record_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "reservation_id": {"type": "string", "pattern": "^CALL-[0-9a-f]{32}$"},
+    "reserved_at": {"type": "string", "format": "date-time"},
+    "execution_authorization_sha256": {"$ref": "#/$defs/sha256"},
+    "adapter_kind": {"enum": ["subject", "grader", "canary"]},
+    "plan_sha256": {"$ref": "#/$defs/sha256"},
+    "request_sha256": {"$ref": "#/$defs/sha256"},
+    "max_billed_tokens": {"type": "integer", "minimum": 1},
+    "status": {"const": "reserved"},
+    "record_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

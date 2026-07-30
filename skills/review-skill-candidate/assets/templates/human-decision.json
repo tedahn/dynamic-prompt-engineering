@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "review_id": "REPLACE",
   "target": {"base_sha": "REPLACE", "head_sha": "REPLACE", "diff_sha256": "REPLACE"},
   "decision_owner": "REPLACE",

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "review_id", "target", "adjudicator", "submission_hashes", "finding_dispositions", "conflicts", "merge_gate", "rationale", "limitations"],
   "properties": {
-    "schema_version": {"const": "1.0"},
+    "schema_version": {"const": "1.1"},
     "review_id": {"type": "string", "minLength": 1},
     "target": {
       "type": "object",
@@ -21,13 +21,14 @@
     "adjudicator": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["adjudicator_id", "surface", "model", "adjudicated_at", "independent_from_authors"],
+      "required": ["adjudicator_id", "surface", "model", "adjudicated_at", "independent_from_authors", "independent_from_reviewers"],
       "properties": {
         "adjudicator_id": {"type": "string", "minLength": 1},
         "surface": {"type": "string", "minLength": 1},
         "model": {"type": ["string", "null"]},
         "adjudicated_at": {"type": "string", "minLength": 1},
-        "independent_from_authors": {"const": true}
+        "independent_from_authors": {"const": true},
+        "independent_from_reviewers": {"const": true}
       }
     },
     "submission_hashes": {

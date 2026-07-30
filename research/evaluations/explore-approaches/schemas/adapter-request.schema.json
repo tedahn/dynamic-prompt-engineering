@@ -28,6 +28,15 @@
     },
     "blind_record": {"type": "object"},
     "rubric": {"type": "object"},
-    "installed_skill": {"type": "string"}
+    "installed_skill": {"type": "string"},
+    "execution_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorization_sha256", "max_billed_tokens"],
+      "properties": {
+        "authorization_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "max_billed_tokens": {"type": "integer", "minimum": 1}
+      }
+    }
   }
 }

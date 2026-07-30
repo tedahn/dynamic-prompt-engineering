@@ -65,6 +65,77 @@ class EvaluationAutomationTest(unittest.TestCase):
             self.assertEqual(result["status"], "completed")
             self.assertEqual([attempt["status"] for attempt in result["attempts"]], ["transient_error", "completed"])
 
+    def test_subject_runner_stops_after_first_permanent_adapter_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run = root / "run"
+            atomic_write_json(run / "frozen/subject-runtime.json", {"runtime": "test"})
+            cells = [
+                {"cell_id": "cell-1", "task_id": "task-1"},
+                {"cell_id": "cell-2", "task_id": "task-2"},
+            ]
+            plan = {
+                "plan_sha256": "1" * 64,
+                "holdout": {"path": str(root / "holdout.jsonl")},
+                "cells": cells,
+            }
+            permanent_error = {
+                "status": "failed",
+                "response": {"status": "permanent_error", "error": "fatal"},
+                "attempts": [],
+            }
+            config = {
+                "evaluation": {
+                    "subject_adapter_argv": ["unused"],
+                    "timeout_ms": 1000,
+                    "max_transient_retries": 0,
+                }
+            }
+            with (
+                patch("automation.evaluation._verified_plan", return_value=(plan, {})),
+                patch("automation.evaluation._task_index", return_value={"task-1": {}, "task-2": {}}),
+                patch("automation.evaluation._subject_request", return_value={"adapter_kind": "subject"}),
+                patch("automation.evaluation.invoke_adapter", return_value=permanent_error) as adapter,
+                patch("automation.evaluation._verify_result_cell"),
+            ):
+                with self.assertRaisesRegex(PipelineError, "permanent-error stop condition"):
+                    run_subjects(root, run, config)
+            self.assertEqual(adapter.call_count, 1)
+            self.assertFalse((run / "results/cells/cell-2.json").exists())
+
+    def test_grader_runner_stops_after_first_permanent_adapter_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary) / "run"
+            atomic_write_json(run / "frozen/rubric.json", {"dimensions": []})
+            blind_packet = run / "grading/blind-packet.jsonl"
+            blind_packet.parent.mkdir(parents=True)
+            blind_packet.write_text("{}\n", encoding="utf-8")
+            packet = [{"packet_id": "packet-1"}, {"packet_id": "packet-2"}]
+            plan = {"plan_sha256": "1" * 64, "rubric_content_sha256": "2" * 64}
+            permanent_error = {
+                "status": "failed",
+                "response": {"status": "permanent_error", "error": "fatal"},
+                "attempts": [],
+            }
+            config = {
+                "evaluation": {
+                    "grader_adapter_argv": ["unused"],
+                    "grader_replicates": 1,
+                    "timeout_ms": 1000,
+                    "max_transient_retries": 0,
+                }
+            }
+            with (
+                patch("automation.evaluation._verified_plan", return_value=(plan, {})),
+                patch("automation.evaluation._verify_blind_bundle", return_value=(packet, [])),
+                patch("automation.evaluation.invoke_adapter", return_value=permanent_error) as adapter,
+                patch("automation.evaluation._verify_provisional_grade"),
+            ):
+                with self.assertRaisesRegex(PipelineError, "permanent-error stop condition"):
+                    run_provisional_grading(run, config)
+            self.assertEqual(adapter.call_count, 1)
+            self.assertFalse((run / "grading/provisional/packet-2/replicate-1.json").exists())
+
     def test_matched_run_blinding_human_final_summary_and_resume(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

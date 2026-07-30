@@ -13,9 +13,23 @@ import shutil
 import subprocess
 import sys
 from typing import Any
+import unicodedata
 
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
+LEGACY_SCHEMA_VERSION = "1.0"
+LEGACY_PACKET_CONTRACTS = {
+    "96f8a21cf9748432187e25e8a6ce787a8ea49be941bea42bc1418567359ebc9c": {
+        "review_id": "PR-001-8371f0f9634b",
+        "repository": "tedahn/dynamic-prompt-engineering",
+        "pull_request": 1,
+        "target": {
+            "base_sha": "506850f0d4cf7b21990231b40c560864fd82e9e2",
+            "head_sha": "8371f0f9634bf86e3417bae09772418034239969",
+            "diff_sha256": "24048aec899e9298b8fa5b08893e428e9de03aba518f9a99431f565c9a7943ca",
+        },
+    },
+}
 REQUIRED_ROLES = (
     "evidence-methodology",
     "engineering-reproducibility",
@@ -75,6 +89,13 @@ def load_json(path: Path) -> Any:
         raise ReviewError(f"Cannot load JSON {path}: {exc}") from exc
 
 
+def canonical_identity(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = unicodedata.normalize("NFKC", value).strip().casefold()
+    return normalized or None
+
+
 def sanitized_git_diagnostic(repo: Path, value: bytes | str, limit: int = 300) -> str:
     text = value.decode("utf-8", "replace") if isinstance(value, bytes) else str(value)
     text = text.replace(str(repo), "<repo>")
@@ -90,13 +111,14 @@ def run_git_bytes(
     *args: str,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
+    safe_env = sanitized_git_environment(env)
     try:
         result = subprocess.run(
             ["git", *args],
             cwd=repo,
             check=False,
             capture_output=True,
-            env=env,
+            env=safe_env,
         )
     except OSError as exc:
         diagnostic = sanitized_git_diagnostic(repo, str(exc))
@@ -109,18 +131,18 @@ def run_git_bytes(
     return result
 
 
-def sanitized_git_environment() -> dict[str, str]:
-    env = os.environ.copy()
-    for key in list(env):
-        if key == "GIT_CONFIG" or key.startswith("GIT_CONFIG_") or key in {
-            "GIT_DIFF_OPTS",
-            "GIT_EXTERNAL_DIFF",
-        }:
-            env.pop(key, None)
+def sanitized_git_environment(source: dict[str, str] | None = None) -> dict[str, str]:
+    source = os.environ if source is None else source
+    # Ambient Git variables can redirect repository discovery, object reads, refs,
+    # the index, attributes, or diff behavior. Remove the complete namespace and
+    # add back only controls owned by this validator.
+    env = {key: value for key, value in source.items() if not key.startswith("GIT_")}
     env.update({
         "GIT_ATTR_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_TERMINAL_PROMPT": "0",
         "LC_ALL": "C",
     })
     return env
@@ -132,17 +154,23 @@ def git(
     binary: bool = False,
     env: dict[str, str] | None = None,
 ) -> bytes | str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        check=False,
-        capture_output=True,
-        text=not binary,
-        env=env,
-    )
+    safe_env = sanitized_git_environment(env)
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            check=False,
+            capture_output=True,
+            text=not binary,
+            env=safe_env,
+        )
+    except OSError as exc:
+        diagnostic = sanitized_git_diagnostic(repo, str(exc))
+        raise ReviewError(f"git {' '.join(args)} could not start: {diagnostic}") from exc
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", "replace") if binary else result.stderr
-        raise ReviewError(f"git {' '.join(args)} failed: {stderr.strip()}")
+        diagnostic = sanitized_git_diagnostic(repo, stderr)
+        raise ReviewError(f"git {' '.join(args)} failed: {diagnostic}")
     return result.stdout
 
 
@@ -161,6 +189,7 @@ def ensure_relative(path_text: str) -> str:
 
 def blob_at(repo: Path, commit: str, relative: str) -> bytes | None:
     relative = ensure_relative(relative)
+    env = sanitized_git_environment()
     probe = run_git_bytes(
         repo,
         "ls-tree probe",
@@ -171,6 +200,7 @@ def blob_at(repo: Path, commit: str, relative: str) -> bytes | None:
         commit,
         "--",
         relative,
+        env=env,
     )
     entries = [entry for entry in probe.stdout.split(b"\0") if entry]
     if not entries:
@@ -191,6 +221,7 @@ def blob_at(repo: Path, commit: str, relative: str) -> bytes | None:
         "cat-file",
         "blob",
         object_id.decode("ascii"),
+        env=env,
     )
     return result.stdout
 
@@ -400,8 +431,137 @@ def file_record(repo: Path, base_sha: str, head_sha: str, relative: str) -> dict
     }
 
 
+def validation_record(value: Any) -> dict[str, str]:
+    if not isinstance(value, str):
+        raise ReviewError("Validation record must be a JSON object string")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ReviewError(
+            "Validation record must be JSON with claim and artifact_path"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ReviewError("Validation record must be a JSON object")
+    if set(parsed) != {"claim", "artifact_path"}:
+        raise ReviewError("Validation record requires only claim and artifact_path")
+    claim = parsed.get("claim")
+    if not isinstance(claim, str) or not claim.strip():
+        raise ReviewError("Validation record claim must be a non-empty string")
+    artifact_path = parsed.get("artifact_path")
+    if not isinstance(artifact_path, str):
+        raise ReviewError("Validation record artifact_path must be a repository-relative string")
+    return {
+        "claim": claim.strip(),
+        "artifact_path": ensure_relative(artifact_path),
+    }
+
+
+def bind_validation_records(
+    raw_records: list[str], evidence_index: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    evidence_by_path = {str(row.get("path")): row for row in evidence_index}
+    records: list[dict[str, str]] = []
+    for raw_record in raw_records:
+        record = validation_record(raw_record)
+        evidence = evidence_by_path.get(record["artifact_path"])
+        if evidence is None:
+            raise ReviewError(
+                "Validation artifact is not present in evidence_index: "
+                f"{record['artifact_path']}"
+            )
+        artifact_sha256 = evidence.get("head_sha256")
+        if not isinstance(artifact_sha256, str):
+            raise ReviewError(
+                "Validation artifact is not present in the frozen head: "
+                f"{record['artifact_path']}"
+            )
+        records.append({**record, "artifact_sha256": artifact_sha256})
+    return records
+
+
+def validate_evidence_index(
+    repo: Path,
+    target: dict[str, str],
+    manifest: dict[str, Any],
+    errors: list[str],
+) -> dict[str, dict[str, Any]]:
+    raw_index = manifest.get("evidence_index")
+    if not isinstance(raw_index, list) or not raw_index:
+        errors.append("manifest evidence_index must be a non-empty array")
+        return {}
+    evidence_by_path: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(raw_index, 1):
+        if not isinstance(row, dict):
+            errors.append(f"evidence_index record {index} is not an object")
+            continue
+        path_value = row.get("path")
+        try:
+            if not isinstance(path_value, str):
+                raise ReviewError("Path must be a string")
+            relative = ensure_relative(path_value)
+        except ReviewError as exc:
+            errors.append(f"evidence_index record {index} path is invalid: {exc}")
+            continue
+        if relative in evidence_by_path:
+            errors.append(f"evidence_index path is duplicated: {relative}")
+            continue
+        try:
+            actual = file_record(repo, target["base_sha"], target["head_sha"], relative)
+        except (KeyError, ReviewError) as exc:
+            errors.append(f"evidence_index record cannot be verified: {relative}: {exc}")
+            continue
+        if row != actual:
+            errors.append(f"evidence_index record hash or state mismatch: {relative}")
+        evidence_by_path[relative] = row
+    return evidence_by_path
+
+
+def validate_validation_records(
+    manifest: dict[str, Any],
+    evidence_by_path: dict[str, dict[str, Any]],
+    errors: list[str],
+) -> None:
+    records = manifest.get("validation_records")
+    if not isinstance(records, list):
+        errors.append("manifest validation_records must be an array")
+        return
+    required = {"claim", "artifact_path", "artifact_sha256"}
+    for index, record in enumerate(records, 1):
+        prefix = f"validation record {index}"
+        if not isinstance(record, dict):
+            errors.append(f"{prefix} is not a hash-bound object")
+            continue
+        if set(record) != required:
+            errors.append(f"{prefix} requires only claim, artifact_path, and artifact_sha256")
+            continue
+        claim = record.get("claim")
+        if not isinstance(claim, str) or not claim.strip():
+            errors.append(f"{prefix} claim is invalid")
+        artifact_path = record.get("artifact_path")
+        try:
+            if not isinstance(artifact_path, str):
+                raise ReviewError("Path must be a string")
+            relative = ensure_relative(artifact_path)
+        except ReviewError as exc:
+            errors.append(f"{prefix} artifact_path is invalid: {exc}")
+            continue
+        evidence = evidence_by_path.get(relative)
+        if evidence is None:
+            errors.append(f"{prefix} artifact is not present in evidence_index: {relative}")
+            continue
+        expected_hash = evidence.get("head_sha256")
+        if not isinstance(expected_hash, str):
+            errors.append(f"{prefix} artifact is not present in the frozen head: {relative}")
+        elif record.get("artifact_sha256") != expected_hash:
+            errors.append(f"{prefix} artifact_sha256 does not match evidence_index: {relative}")
+
+
 def changed_files(repo: Path, base_sha: str, head_sha: str) -> list[str]:
-    output = git(repo, "diff", "--name-only", "-z", base_sha, head_sha, binary=True)
+    env = sanitized_git_environment()
+    output = git(
+        repo, "diff", "--name-only", "-z", base_sha, head_sha,
+        binary=True, env=env,
+    )
     assert isinstance(output, bytes)
     return sorted(
         ensure_relative(item.decode("utf-8"))
@@ -471,13 +631,18 @@ def render_context(manifest: dict[str, Any]) -> str:
         f"`{row['head_sha256'] or row['base_sha256']}` |"
         for index, row in enumerate(manifest["evidence_index"], 1)
     )
-    validation = "\n".join(f"- {item}" for item in manifest["known_validation"]) or "- None recorded"
+    validation = "\n".join(
+        f"- {item['claim']} — `{item['artifact_path']}` @ `{item['artifact_sha256']}`"
+        for item in manifest["validation_records"]
+    ) or "- None recorded"
     policies = "\n".join(f"- `{row['path']}`" for row in manifest["policy_index"])
+    packet_authors = ", ".join(f"`{item}`" for item in manifest["packet_author_ids"])
     return f"""# {manifest['review_id']} — frozen review context
 
-- Version: {SCHEMA_VERSION}
+- Version: {manifest['schema_version']}
 - Built at: {manifest['built_at']}
 - Owner: {manifest['decision_owner']}
+- Packet author identities: {packet_authors}
 - Consumer: isolated reviewers and adjudicator
 - Supported gate: merge readiness only
 - Repository: {manifest['repository']}
@@ -505,7 +670,7 @@ Decide whether the frozen target is coherent and safe enough to become eligible 
 
 ## Current state
 
-The target is frozen for review. Existing validation is reported evidence, not a substitute for inspection.
+The target is frozen for review. Each validation claim below is bound to a frozen-head artifact hash; it remains reported evidence, not a substitute for inspection.
 
 ## Known validation
 
@@ -598,12 +763,14 @@ Write exactly one JSON object matching `schemas/review-submission.schema.json` t
 
 def render_gate(manifest: dict[str, Any]) -> str:
     target = manifest["target"]
+    packet_authors = ", ".join(f"`{item}`" for item in manifest["packet_author_ids"])
     return f"""# {manifest['review_id']} — merge-readiness decision
 
 - Gate: G5 review handoff; merge decision only
 - Status: proposed
 - Decision owner: {manifest['decision_owner']}
 - Requested by: {manifest['requested_by']}
+- Packet author identities: {packet_authors}
 - Opened at: {manifest['built_at']}
 - Decided at: null
 - Expires at: target or policy change
@@ -682,6 +849,18 @@ def init_bundle(args: argparse.Namespace) -> dict[str, Any]:
     artifacts = sorted(set(changed + [ensure_relative(item) for item in args.artifact]))
     policies = sorted(set(ensure_relative(item) for item in args.policy))
     review_id = args.review_id or f"PR-{int(args.pr_number):03d}-{target['head_sha'][:12]}"
+    packet_author_ids = [item.strip() for item in args.packet_author_id]
+    canonical_authors = [canonical_identity(item) for item in packet_author_ids]
+    if any(item is None for item in canonical_authors):
+        raise ReviewError("Packet author identities must be non-empty strings")
+    if len(canonical_authors) != len(set(canonical_authors)):
+        raise ReviewError("Packet author identities must be unique")
+
+    evidence_index = [
+        file_record(repo, target["base_sha"], target["head_sha"], item)
+        for item in artifacts
+    ]
+    validation_records = bind_validation_records(list(args.validation), evidence_index)
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -692,14 +871,12 @@ def init_bundle(args: argparse.Namespace) -> dict[str, Any]:
         "decision": "merge_readiness",
         "decision_owner": args.decision_owner,
         "requested_by": args.requested_by,
+        "packet_author_ids": packet_author_ids,
         "target": target,
         "required_roles": list(REQUIRED_ROLES),
-        "known_validation": list(args.validation),
+        "validation_records": validation_records,
         "changed_files": changed,
-        "evidence_index": [
-            file_record(repo, target["base_sha"], target["head_sha"], item)
-            for item in artifacts
-        ],
+        "evidence_index": evidence_index,
         "policy_index": [
             file_record(repo, target["base_sha"], target["head_sha"], item)
             for item in policies
@@ -729,17 +906,42 @@ def exact_target(value: Any, target: dict[str, str]) -> bool:
     return isinstance(value, dict) and all(value.get(key) == target[key] for key in target)
 
 
-def validate_packet_index(bundle: Path, errors: list[str]) -> dict[str, bytes] | None:
+def validate_legacy_packet_contract(bundle: Path, manifest: dict[str, Any]) -> None:
+    index_path = bundle / "packet-index.json"
+    if not index_path.is_file():
+        raise ReviewError("Legacy schema_version 1.0 requires the frozen PR-001 packet index")
+    contract = LEGACY_PACKET_CONTRACTS.get(sha256_file(index_path))
+    if contract is None:
+        raise ReviewError(
+            "Legacy schema_version 1.0 is accepted only for the frozen PR-001 contract"
+        )
+    for key in ("review_id", "repository", "pull_request", "target"):
+        if manifest.get(key) != contract[key]:
+            raise ReviewError(
+                "Legacy schema_version 1.0 cannot authorize a different packet or target"
+            )
+
+
+def validate_packet_index(
+    bundle: Path,
+    errors: list[str],
+    expected_schema_version: str = SCHEMA_VERSION,
+) -> dict[str, bytes] | None:
     index_path = bundle / "packet-index.json"
     if not index_path.is_file():
         errors.append("missing packet-index.json")
         return None
     index = load_json(index_path)
     files = index.get("files") if isinstance(index, dict) else None
+    version_matches = (
+        isinstance(index, dict) and index.get("schema_version") == expected_schema_version
+    )
+    if not version_matches:
+        errors.append("packet-index.json schema_version mismatch")
     if not isinstance(files, dict) or not files:
         errors.append("packet-index.json has no file map")
         return None
-    valid = True
+    valid = version_matches
     verified_files: dict[str, bytes] = {}
     required_schema_paths = set(PACKET_SCHEMA_PATHS.values())
     for relative, expected in files.items():
@@ -801,7 +1003,7 @@ def validate_submission(
         return None, []
     assert isinstance(value, dict)
     target = manifest["target"]
-    if value.get("schema_version") != SCHEMA_VERSION:
+    if value.get("schema_version") != manifest.get("schema_version"):
         errors.append(f"{role} schema_version mismatch")
     if value.get("review_id") != manifest["review_id"]:
         errors.append(f"{role} review_id mismatch")
@@ -869,6 +1071,9 @@ def validate_adjudication(
     manifest: dict[str, Any],
     submissions: dict[str, dict[str, Any]],
     findings: dict[str, dict[str, Any]],
+    reviewer_ids: set[str],
+    packet_author_ids: set[str],
+    strict_identity_separation: bool,
     schema: dict[str, Any] | None,
     errors: list[str],
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -888,8 +1093,26 @@ def validate_adjudication(
     if value.get("review_id") != manifest["review_id"] or not exact_target(value.get("target"), manifest["target"]):
         errors.append("adjudication target or review_id mismatch")
     adjudicator = value.get("adjudicator")
-    if not isinstance(adjudicator, dict) or adjudicator.get("independent_from_authors") is not True:
+    if not strict_identity_separation:
+        if (
+            not isinstance(adjudicator, dict)
+            or adjudicator.get("independent_from_authors") is not True
+        ):
+            errors.append("adjudicator independence is missing")
+    elif not isinstance(adjudicator, dict):
         errors.append("adjudicator independence is missing")
+    else:
+        adjudicator_id = canonical_identity(adjudicator.get("adjudicator_id"))
+        if adjudicator_id is None:
+            errors.append("adjudicator identity is missing")
+        if adjudicator.get("independent_from_authors") is not True:
+            errors.append("adjudicator independence from authors is missing")
+        if adjudicator.get("independent_from_reviewers") is not True:
+            errors.append("adjudicator independence from reviewers is missing")
+        if adjudicator_id in reviewer_ids:
+            errors.append("adjudicator identity matches a reviewer identity")
+        if adjudicator_id in packet_author_ids:
+            errors.append("adjudicator identity matches a packet author identity")
     hashes = value.get("submission_hashes")
     for role, submission in submissions.items():
         expected = sha256_file(bundle / "submissions" / f"{role}.json")
@@ -971,7 +1194,13 @@ def validate_bundle(args: argparse.Namespace) -> dict[str, Any]:
     if not manifest_path.is_file():
         raise ReviewError(f"Missing manifest: {manifest_path}")
     manifest = load_json(manifest_path)
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA_VERSION:
+    if not isinstance(manifest, dict):
+        raise ReviewError("Manifest schema_version is invalid")
+    bundle_schema_version = manifest.get("schema_version")
+    legacy_contract = bundle_schema_version == LEGACY_SCHEMA_VERSION
+    if legacy_contract:
+        validate_legacy_packet_contract(bundle, manifest)
+    elif bundle_schema_version != SCHEMA_VERSION:
         raise ReviewError("Manifest schema_version is invalid")
     target = manifest.get("target")
     if not isinstance(target, dict):
@@ -983,13 +1212,31 @@ def validate_bundle(args: argparse.Namespace) -> dict[str, Any]:
             errors.append("frozen target diff hash mismatch")
     except (KeyError, ReviewError) as exc:
         errors.append(f"frozen target cannot be verified: {exc}")
-    verified_files = validate_packet_index(bundle, errors)
+    verified_files = validate_packet_index(bundle, errors, str(bundle_schema_version))
     schemas: dict[str, dict[str, Any]] = {}
     if verified_files is not None:
         try:
             schemas = load_packet_schemas(verified_files)
         except ReviewError as exc:
             errors.append(f"verified packet schemas cannot be loaded: {exc}")
+
+    packet_author_ids: set[str] = set()
+    if not legacy_contract:
+        raw_packet_author_ids = manifest.get("packet_author_ids")
+        if not isinstance(raw_packet_author_ids, list) or not raw_packet_author_ids:
+            errors.append("manifest packet_author_ids must be a non-empty array")
+        else:
+            for value in raw_packet_author_ids:
+                identity = canonical_identity(value)
+                if identity is None:
+                    errors.append("manifest packet author identity is invalid")
+                else:
+                    packet_author_ids.add(identity)
+            if len(packet_author_ids) != len(raw_packet_author_ids):
+                errors.append("manifest packet author identities are not unique")
+
+        evidence_by_path = validate_evidence_index(repo, target, manifest, errors)
+        validate_validation_records(manifest, evidence_by_path, errors)
 
     submissions: dict[str, dict[str, Any]] = {}
     findings: dict[str, dict[str, Any]] = {}
@@ -1007,7 +1254,14 @@ def validate_bundle(args: argparse.Namespace) -> dict[str, Any]:
             submissions[role] = submission
             reviewer = submission.get("reviewer")
             if isinstance(reviewer, dict) and reviewer.get("reviewer_id"):
-                reviewer_ids.append(str(reviewer["reviewer_id"]))
+                if legacy_contract:
+                    reviewer_ids.append(str(reviewer["reviewer_id"]))
+                else:
+                    identity = canonical_identity(reviewer["reviewer_id"])
+                    if identity is None:
+                        errors.append(f"{role} reviewer identity is invalid")
+                    else:
+                        reviewer_ids.append(identity)
         for finding in role_findings:
             finding_id = finding.get("finding_id")
             if not finding_id:
@@ -1019,7 +1273,15 @@ def validate_bundle(args: argparse.Namespace) -> dict[str, Any]:
         errors.append("reviewer identities are not unique")
 
     adjudication, dispositions = validate_adjudication(
-        bundle, manifest, submissions, findings, schemas.get("adjudication"), errors
+        bundle,
+        manifest,
+        submissions,
+        findings,
+        set(reviewer_ids),
+        packet_author_ids,
+        not legacy_contract,
+        schemas.get("adjudication"),
+        errors,
     )
     blocking = [
         item
@@ -1047,7 +1309,7 @@ def validate_bundle(args: argparse.Namespace) -> dict[str, Any]:
     warnings.append("promotion and installation require separate evidence and human gates")
 
     summary = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": bundle_schema_version,
         "review_id": manifest["review_id"],
         "target": target,
         "ok": not errors,
@@ -1083,12 +1345,29 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--pr-number", required=True, type=int)
     init.add_argument("--decision-owner", required=True)
     init.add_argument("--requested-by", required=True)
+    init.add_argument(
+        "--packet-author-id",
+        action="append",
+        required=True,
+        help="stable target or packet author identity; repeat for every author",
+    )
     init.add_argument("--output", required=True)
     init.add_argument("--review-id")
     init.add_argument("--built-at", required=True)
     init.add_argument("--policy", action="append", default=[])
     init.add_argument("--artifact", action="append", default=[])
-    init.add_argument("--validation", action="append", default=[])
+    init.add_argument(
+        "--validation-record",
+        "--validation",
+        dest="validation",
+        action="append",
+        default=[],
+        metavar="JSON",
+        help=(
+            "repeatable JSON object with claim and artifact_path; the artifact must be "
+            "present in evidence_index and is bound to its frozen-head SHA-256"
+        ),
+    )
     validate = sub.add_parser("validate", help="validate a completed review bundle")
     validate.add_argument("--repo-root", required=True)
     validate.add_argument("--bundle", required=True)

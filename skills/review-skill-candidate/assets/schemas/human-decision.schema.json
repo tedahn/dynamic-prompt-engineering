@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "review_id", "target", "decision_owner", "actor_type", "decision", "decided_at", "rationale", "conditions", "dissent", "reversal_evidence", "authorized_actions", "forbidden_actions"],
   "properties": {
-    "schema_version": {"const": "1.0"},
+    "schema_version": {"const": "1.1"},
     "review_id": {"type": "string", "minLength": 1},
     "target": {
       "type": "object",
