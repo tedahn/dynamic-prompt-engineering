@@ -36,7 +36,7 @@ The candidate combines workspace inspection, option diversity, baseline inclusio
 ## Operations
 
 - **Installation scope:** None until the promotion process completes.
-- **GitHub target:** `origin` at `https://github.com/tedahn/dynamic-prompt-engineering-in-execution.git` through a scoped branch and reviewed pull request.
+- **GitHub target:** `origin` at `https://github.com/tedahn/dynamic-prompt-engineering.git` through a scoped branch and reviewed pull request.
 - **Root destination after approval and merge:** `~/.codex/skills/explore-approaches`.
 - **Review signals:** Hard-gate failures, task-quality rubric, pairwise preference, latency, tokens, cost, reviewer effort, trigger collision, and user override rate.
 - **Canary:** Explicit invocation on low-authority, non-sensitive advisory tasks.
