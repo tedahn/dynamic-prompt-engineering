@@ -11,7 +11,7 @@
   },
   "evaluation": {
     "arms": ["B00_RAW", "B01_MIN_ADVICE", "B02_PROFESSIONALIZE", "C01_EXPLORE"],
-    "minimum_holdout_tasks": 12,
+    "minimum_holdout_tasks": 29,
     "required_holdout_domains": ["coding", "research", "product", "architecture", "operations", "security", "privacy", "high-authority"],
     "trials_per_task": 3,
     "grader_replicates": 2,
@@ -31,7 +31,7 @@
     "bootstrap_seed": 7302026,
     "bootstrap_resamples": 50000,
     "analysis_plan": {
-      "version": "1.1",
+      "version": "1.2",
       "trial_aggregation": "arithmetic_mean_within_task_arm",
       "task_weighting": "equal",
       "missing_handling": "no_imputation_inconclusive",
@@ -39,7 +39,8 @@
       "adjudication": "one_named_human_final_packet_per_task_trial",
       "quality_interval": "task_cluster_percentile_bootstrap_mean",
       "resource_interval": "task_cluster_percentile_bootstrap_median",
-      "critical_opportunity_unit": "task_cluster",
+      "critical_opportunity_unit": "holdout_owner_attested_family",
+      "critical_family_handling": "duplicate_family_counts_once_any_failure_fails_family",
       "critical_zero_failure_bound": "exact_one_sided_binomial_95",
       "confidence_level": 0.95
     },
@@ -58,8 +59,8 @@
     "canary_dependency_paths": [],
     "thresholds": {
       "critical_candidate_failures_max": 0,
-      "critical_gate_task_opportunities_min": 3,
-      "critical_gate_failure_rate_upper95_max": 0.65,
+      "critical_gate_independent_opportunities_min": 29,
+      "critical_gate_failure_rate_upper95_max": 0.1,
       "other_hard_gate_pass_rate_min": 0.95,
       "c01_minus_b01_mean_min": 0.4,
       "c01_minus_b02_mean_min": -0.1,

@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from automation.core import PipelineError, atomic_write_json, sha256_file, sha256_json
+from automation.core import PipelineError, atomic_write_json, run_command as isolated_run_command, sha256_file, sha256_json
 from automation.evaluation import lifecycle_executable_bindings
 from automation.promotion import (
     approval_payload,
@@ -25,6 +25,7 @@ from automation.promotion import (
     merge_reviewed_pr,
     prepare_clean_promotion,
     rehearse_rollback,
+    run_active_rollback_canary,
     seal_record,
     validate_approval,
     validate_installation_receipt,
@@ -35,6 +36,39 @@ from automation.promotion import (
     verify_ssh_signature,
     write_immutable_record,
 )
+
+
+FORKING_HELPER = r'''from __future__ import annotations
+import os, signal, sys, time
+
+def mark(name: str, value: str) -> None:
+    with open(os.environ[name], "w", encoding="utf-8") as handle:
+        handle.write(value)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+child = os.fork()
+if child == 0:
+    os.closerange(0, 3)
+    def on_term(_signum, _frame):
+        mark("HELPER_TERMINATED", "terminated")
+        time.sleep(5)
+    signal.signal(signal.SIGTERM, on_term)
+    mark("HELPER_READY", "ready")
+    time.sleep(30)
+    mark("HELPER_SURVIVED", "survived")
+    os._exit(0)
+
+mark("HELPER_CHILD_PID", str(child))
+deadline = time.monotonic() + 5
+while not os.path.exists(os.environ["HELPER_READY"]):
+    if time.monotonic() >= deadline:
+        sys.exit(91)
+    time.sleep(0.005)
+if os.environ.get("HELPER_MODE") == "failure":
+    sys.exit(7)
+time.sleep(30)
+'''
 
 
 class PromotionAutomationTest(unittest.TestCase):
@@ -307,6 +341,146 @@ class PromotionAutomationTest(unittest.TestCase):
             config["installation"]["installer_script"] = str(root / "missing-helper.py")
             with self.assertRaisesRegex(PipelineError, "missing|regular non-symlink"):
                 atomic_install(root / "checkout", "e" * 40, root / "missing-run", config, canary=lambda *_: {})
+
+    def test_production_install_preflight_rejects_missing_posix_isolation_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = {
+                "candidate": {"skill_path": "skills/explore-approaches"},
+                "installation": {
+                    "source_mode": "installer",
+                    "installer_script": str(root / "unused-installer.py"),
+                    "skills_root": str(root / "root-skills"),
+                    "skill_name": "explore-approaches",
+                    "backup_directory": str(root / "backups"),
+                    "quarantine_directory": str(root / "quarantine"),
+                },
+            }
+            with (
+                patch("automation.core._posix_process_isolation_available", return_value=False),
+                patch("automation.promotion.run_command") as launch,
+            ):
+                with self.assertRaisesRegex(PipelineError, "requires POSIX process-group isolation"):
+                    atomic_install(root / "checkout", "f" * 40, root / "run", config, canary=lambda *_: {})
+            launch.assert_not_called()
+            self.assertFalse((root / "root-skills").exists())
+            self.assertFalse((root / "run").exists())
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "fork"), "requires POSIX process groups")
+    def test_timed_out_installer_reaps_forked_descendant_before_install_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "checkout/skills/explore-approaches"
+            source.mkdir(parents=True)
+            (source / "SKILL.md").write_text("approved\n", encoding="utf-8")
+            helper = root / "forking-installer.py"
+            helper.write_text(FORKING_HELPER, encoding="utf-8")
+            noop = root / "noop.py"
+            noop.write_text("raise SystemExit(0)\n", encoding="utf-8")
+            markers = {
+                "HELPER_READY": str(root / "helper-ready"),
+                "HELPER_TERMINATED": str(root / "helper-terminated"),
+                "HELPER_SURVIVED": str(root / "helper-survived"),
+                "HELPER_CHILD_PID": str(root / "helper-child-pid"),
+                "HELPER_MODE": "timeout",
+            }
+            config = {
+                "candidate": {"skill_path": "skills/explore-approaches"},
+                "promotion": {"repository_slug": "owner/repository"},
+                "installation": {
+                    "source_mode": "installer",
+                    "installer_script": str(helper),
+                    "installer_dependency_paths": [],
+                    "installer_env_allowlist": list(markers),
+                    "skills_root": str(root / "root-skills"),
+                    "skill_name": "explore-approaches",
+                    "backup_directory": str(root / "backups"),
+                    "quarantine_directory": str(root / "quarantine"),
+                    "validator_argv": [str(Path(sys.executable).resolve()), str(noop), "{skill}"],
+                    "validator_entrypoint_path": str(noop),
+                    "validator_dependency_paths": [],
+                },
+                "evaluation": {
+                    "canary_adapter_argv": [str(Path(sys.executable).resolve()), str(noop), "{input}", "{output}"],
+                    "canary_entrypoint_path": str(noop),
+                    "canary_dependency_paths": [],
+                },
+            }
+            bindings = lifecycle_executable_bindings(config)
+            run_dir = root / "run"
+            atomic_write_json(run_dir / "frozen/lifecycle-executables.json", bindings)
+            plan_body = {"lifecycle_executables_sha256": bindings["sha256"]}
+            atomic_write_json(run_dir / "plan.json", {**plan_body, "plan_sha256": sha256_json(plan_body)})
+
+            def bounded(command: list[str], **kwargs):
+                return isolated_run_command(command, timeout=0.2, **kwargs)
+
+            with patch.dict(os.environ, markers, clear=False), patch(
+                "automation.promotion.run_command", side_effect=bounded
+            ):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    atomic_install(
+                        root / "checkout",
+                        "f" * 40,
+                        run_dir,
+                        config,
+                        canary=lambda *_: {"status": "completed", "output": {"passed": True}},
+                    )
+            child_pid = int(Path(markers["HELPER_CHILD_PID"]).read_text(encoding="utf-8"))
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
+            self.assertTrue(Path(markers["HELPER_READY"]).is_file())
+            self.assertTrue(Path(markers["HELPER_TERMINATED"]).is_file())
+            self.assertFalse(Path(markers["HELPER_SURVIVED"]).exists())
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "fork"), "requires POSIX process groups")
+    def test_failed_validator_reaps_forked_descendant_and_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            destination = root / "root-skills/explore-approaches"
+            destination.mkdir(parents=True)
+            (destination / "SKILL.md").write_text("previous\n", encoding="utf-8")
+            helper = root / "forking-validator.py"
+            helper.write_text(FORKING_HELPER, encoding="utf-8")
+            noop = root / "noop.py"
+            noop.write_text("raise SystemExit(0)\n", encoding="utf-8")
+            markers = {
+                "HELPER_READY": str(root / "helper-ready"),
+                "HELPER_TERMINATED": str(root / "helper-terminated"),
+                "HELPER_SURVIVED": str(root / "helper-survived"),
+                "HELPER_CHILD_PID": str(root / "helper-child-pid"),
+                "HELPER_MODE": "failure",
+            }
+            config = {
+                "installation": {
+                    "source_mode": "local-test",
+                    "validator_argv": [str(Path(sys.executable).resolve()), str(helper), "{skill}"],
+                    "validator_entrypoint_path": str(helper),
+                    "validator_dependency_paths": [],
+                    "validator_env_allowlist": list(markers),
+                },
+                "evaluation": {
+                    "canary_adapter_argv": [str(Path(sys.executable).resolve()), str(noop), "{input}", "{output}"],
+                    "canary_entrypoint_path": str(noop),
+                    "canary_dependency_paths": [],
+                },
+            }
+            bindings = lifecycle_executable_bindings(config)
+            run_dir = root / "run"
+            atomic_write_json(run_dir / "frozen/lifecycle-executables.json", bindings)
+            plan_body = {"lifecycle_executables_sha256": bindings["sha256"]}
+            atomic_write_json(run_dir / "plan.json", {**plan_body, "plan_sha256": sha256_json(plan_body)})
+            expected_hashes = {"SKILL.md": sha256_file(destination / "SKILL.md")}
+            with patch.dict(os.environ, markers, clear=False):
+                with self.assertRaisesRegex(PipelineError, "outlived its leader"):
+                    run_active_rollback_canary(destination, expected_hashes, run_dir, config)
+            child_pid = int(Path(markers["HELPER_CHILD_PID"]).read_text(encoding="utf-8"))
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
+            self.assertTrue(Path(markers["HELPER_READY"]).is_file())
+            self.assertTrue(Path(markers["HELPER_TERMINATED"]).is_file())
+            self.assertFalse(Path(markers["HELPER_SURVIVED"]).exists())
+
     @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
     def test_detached_ssh_signature_is_verified_and_tamper_evident(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

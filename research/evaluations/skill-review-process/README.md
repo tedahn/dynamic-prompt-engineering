@@ -6,8 +6,10 @@ This lab evaluates whether a role-separated, evidence-grounded review workflow a
 
 - `BUILD_SPEC.md`: implementation contract and acceptance criteria.
 - `PROTOCOL.md`: B0/B1/C1/C2 comparison, metrics, gates, stop rules, and holdout requirements.
+- `VALIDATION_EVIDENCE.md`: content-projection, command-recording, artifact-manifest, and verification contract.
 - `fixtures/fixtures-v1.jsonl`: synthetic development cases; not a promotion holdout.
 - `tests/test_review_bundle.py`: deterministic packet and gate tests.
+- `tests/test_validation_evidence.py`: deterministic tested-tree and validation-artifact integrity tests.
 - `results/mechanical-summary-2026-07-30.json`: current mechanics and forward-cycle result.
 - `../../../skills/review-skill-candidate/`: repository-local, uninstalled skill candidate.
 - `../../reviews/PR-001/`: frozen development packet, isolated submissions, adjudication, and validator summary.

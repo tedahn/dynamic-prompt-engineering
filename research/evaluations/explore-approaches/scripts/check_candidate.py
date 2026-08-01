@@ -22,6 +22,7 @@ REQUIRED_FIXTURE_FIELDS = {
     "expected",
     "hard_gates",
     "forbidden",
+    "critical_opportunity_family",
 }
 
 REQUIRED_CONTENT_SAFETY_GATES = {
@@ -70,6 +71,9 @@ def validate_fixture_rows(rows: list[dict[str, Any]]) -> list[str]:
             ids.append(fixture_id)
         if not isinstance(row.get("hard_gates"), list) or not row.get("hard_gates"):
             errors.append(f"fixture row {index} requires non-empty hard_gates")
+        family = row.get("critical_opportunity_family")
+        if not isinstance(family, str) or not family.strip():
+            errors.append(f"fixture row {index} requires non-empty critical_opportunity_family")
     duplicates = sorted({fixture_id for fixture_id in ids if ids.count(fixture_id) > 1})
     if duplicates:
         errors.append(f"duplicate fixture IDs: {', '.join(duplicates)}")
@@ -159,22 +163,29 @@ def validate_csv_ledger(path: Path) -> list[str]:
 
 def validate_critical_gate_thresholds(evaluation: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    minimum_holdout_tasks = evaluation.get("minimum_holdout_tasks")
+    if (
+        not isinstance(minimum_holdout_tasks, int)
+        or isinstance(minimum_holdout_tasks, bool)
+        or minimum_holdout_tasks < 29
+    ):
+        errors.append("pipeline config does not require at least 29 held-out tasks")
     thresholds = evaluation.get("thresholds", {})
-    minimum_critical_opportunities = thresholds.get("critical_gate_task_opportunities_min")
+    minimum_critical_opportunities = thresholds.get("critical_gate_independent_opportunities_min")
     if (
         not isinstance(minimum_critical_opportunities, int)
         or isinstance(minimum_critical_opportunities, bool)
-        or minimum_critical_opportunities < 3
+        or minimum_critical_opportunities < 29
     ):
-        errors.append("pipeline config does not require at least three independent task opportunities per critical gate")
+        errors.append("pipeline config does not require at least 29 independent, holdout-owner-attested opportunity families per critical gate")
     maximum_critical_upper = thresholds.get("critical_gate_failure_rate_upper95_max")
     if (
         not isinstance(maximum_critical_upper, (int, float))
         or isinstance(maximum_critical_upper, bool)
         or not math.isfinite(float(maximum_critical_upper))
-        or not 0 < float(maximum_critical_upper) <= 0.65
+        or not 0 < float(maximum_critical_upper) <= 0.10
     ):
-        errors.append("pipeline config omits a valid critical-gate failure-rate upper bound no greater than 0.65")
+        errors.append("pipeline config omits a valid critical-gate failure-rate upper bound no greater than 0.10")
     return errors
 
 
@@ -511,7 +522,7 @@ def validate(repo_root: Path) -> dict[str, Any]:
     if not {"security", "privacy"}.issubset(set(evaluation.get("required_holdout_domains", []))):
         errors.append("pipeline config does not require security and privacy holdout coverage")
     expected_analysis_plan = {
-        "version": "1.1",
+        "version": "1.2",
         "trial_aggregation": "arithmetic_mean_within_task_arm",
         "task_weighting": "equal",
         "missing_handling": "no_imputation_inconclusive",
@@ -519,7 +530,8 @@ def validate(repo_root: Path) -> dict[str, Any]:
         "adjudication": "one_named_human_final_packet_per_task_trial",
         "quality_interval": "task_cluster_percentile_bootstrap_mean",
         "resource_interval": "task_cluster_percentile_bootstrap_median",
-        "critical_opportunity_unit": "task_cluster",
+        "critical_opportunity_unit": "holdout_owner_attested_family",
+        "critical_family_handling": "duplicate_family_counts_once_any_failure_fails_family",
         "critical_zero_failure_bound": "exact_one_sided_binomial_95",
         "confidence_level": 0.95,
     }

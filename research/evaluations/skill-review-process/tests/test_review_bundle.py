@@ -110,6 +110,7 @@ class ReviewBundleTests(unittest.TestCase):
                 "role": role, "reviewer_id": reviewer_id, "surface": "test",
                 "model": None, "reviewed_at": "2026-07-30T00:01:00Z",
                 "independent_context": True,
+                "independent_from_authors": True,
             },
             "scope": {
                 "reviewed_files": ["app.py", "skill.md"], "not_reviewed": [],
@@ -414,6 +415,14 @@ class ReviewBundleTests(unittest.TestCase):
         cases.append(("missing root", value, ("$:", "missing required property 'limitations'")))
 
         value = json.loads(json.dumps(base))
+        value["reviewer"].pop("independent_from_authors")
+        cases.append((
+            "missing reviewer author independence",
+            value,
+            ("$.reviewer", "missing required property 'independent_from_authors'"),
+        ))
+
+        value = json.loads(json.dumps(base))
         value["findings"][0]["evidence"][0].pop("line_end")
         cases.append((
             "missing nested evidence",
@@ -446,6 +455,32 @@ class ReviewBundleTests(unittest.TestCase):
         for label, value, fragments in cases:
             with self.subTest(label=label):
                 self._assert_schema_error(value, *fragments)
+
+    def test_submission_semantically_requires_author_independence(self) -> None:
+        role = "evidence-methodology"
+        value = self._submission(role, "reviewer-1")
+        value["reviewer"].pop("independent_from_authors")
+        path = self.bundle / "submissions" / f"{role}.json"
+        REVIEW.write_json(path, value)
+        schema = json.loads(json.dumps(self._packet_schemas()["review_submission"]))
+        schema["properties"]["reviewer"]["required"].remove("independent_from_authors")
+        errors: list[str] = []
+
+        submission, _ = REVIEW.validate_submission(
+            self.repo,
+            path,
+            role,
+            self._manifest(),
+            schema,
+            errors,
+            strict_identity_separation=True,
+        )
+
+        self.assertIsNotNone(submission)
+        self.assertIn(
+            "evidence-methodology independence from authors not affirmed",
+            errors,
+        )
 
     def test_submission_schema_rejects_types_lengths_and_nested_contracts(self) -> None:
         base = self._submission("evidence-methodology", "reviewer-1", [self._finding()])
@@ -754,6 +789,33 @@ class ReviewBundleTests(unittest.TestCase):
         result = self._validate()
         self.assertFalse(result["ok"])
         self.assertIn("reviewer identities are not unique", result["errors"])
+
+    def test_reviewer_identities_use_unicode_case_canonicalization(self) -> None:
+        reviewer_ids = ["Straße", "STRASSE", "reviewer-3"]
+        for role, reviewer_id in zip(REVIEW.REQUIRED_ROLES, reviewer_ids, strict=True):
+            REVIEW.write_json(
+                self.bundle / "submissions" / f"{role}.json",
+                self._submission(role, reviewer_id),
+            )
+        self._write_adjudication()
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertIn("reviewer identities are not unique", result["errors"])
+
+    def test_reviewer_cannot_match_packet_author_after_canonicalization(self) -> None:
+        reviewer_ids = ["ＣＡＮＤＩＤＡＴＥ-ＡＵＴＨＯＲ-１", "reviewer-2", "reviewer-3"]
+        for role, reviewer_id in zip(REVIEW.REQUIRED_ROLES, reviewer_ids, strict=True):
+            REVIEW.write_json(
+                self.bundle / "submissions" / f"{role}.json",
+                self._submission(role, reviewer_id),
+            )
+        self._write_adjudication()
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            "evidence-methodology reviewer identity matches a packet author identity",
+            result["errors"],
+        )
 
     def test_reviewer_cannot_adjudicate_same_packet(self) -> None:
         self._write_reviews()

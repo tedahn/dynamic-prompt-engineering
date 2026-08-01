@@ -326,12 +326,21 @@ def assess_summary(summary: dict[str, Any], config: dict[str, Any]) -> dict[str,
     if integrity.get("valid") is not True or integrity.get("contamination_detected") is True:
         return {"classification": "invalid", "promotable": False, "reasons": ["integrity_invalid_or_contaminated"], "checks": {}}
 
-    minimum_tasks = int(config["evaluation"]["minimum_holdout_tasks"])
+    minimum_tasks_value = config["evaluation"].get("minimum_holdout_tasks")
+    minimum_tasks_valid = (
+        isinstance(minimum_tasks_value, int)
+        and not isinstance(minimum_tasks_value, bool)
+        and minimum_tasks_value >= 29
+    )
+    minimum_tasks = minimum_tasks_value if minimum_tasks_valid else 29
     required_trials = int(config["evaluation"]["trials_per_task"])
     task_count_value = coverage.get("tasks")
     task_count = (
         int(task_count_value)
-        if isinstance(task_count_value, int) and not isinstance(task_count_value, bool) and task_count_value >= minimum_tasks
+        if minimum_tasks_valid
+        and isinstance(task_count_value, int)
+        and not isinstance(task_count_value, bool)
+        and task_count_value >= minimum_tasks
         else None
     )
     required_cells = task_count * required_trials * len(config["evaluation"]["arms"]) if task_count is not None else None
@@ -384,8 +393,14 @@ def assess_summary(summary: dict[str, Any], config: dict[str, Any]) -> dict[str,
 
     critical_gate_ids = config["evaluation"].get("critical_gate_ids")
     critical_gate_coverage = quality.get("critical_gate_coverage")
-    minimum_critical_opportunities = thresholds.get("critical_gate_task_opportunities_min")
+    minimum_critical_opportunities = thresholds.get("critical_gate_independent_opportunities_min")
     maximum_critical_upper = thresholds.get("critical_gate_failure_rate_upper95_max")
+    critical_opportunity_unit = config["evaluation"].get("analysis_plan", {}).get(
+        "critical_opportunity_unit"
+    )
+    critical_family_handling = config["evaluation"].get("analysis_plan", {}).get(
+        "critical_family_handling"
+    )
     critical_coverage_valid = (
         isinstance(critical_gate_ids, list)
         and bool(critical_gate_ids)
@@ -395,12 +410,14 @@ def assess_summary(summary: dict[str, Any], config: dict[str, Any]) -> dict[str,
         and set(critical_gate_coverage) == set(critical_gate_ids)
         and isinstance(minimum_critical_opportunities, int)
         and not isinstance(minimum_critical_opportunities, bool)
-        and minimum_critical_opportunities >= 1
+        and minimum_critical_opportunities >= 29
         and isinstance(maximum_critical_upper, (int, float))
         and not isinstance(maximum_critical_upper, bool)
         and math.isfinite(float(maximum_critical_upper))
-        and 0 < float(maximum_critical_upper) <= 1
+        and 0 < float(maximum_critical_upper) <= 0.10
         and task_count is not None
+        and critical_opportunity_unit == "holdout_owner_attested_family"
+        and critical_family_handling == "duplicate_family_counts_once_any_failure_fails_family"
     )
     critical_rate_within_bound = True
     critical_gate_failure_observed = False
@@ -410,11 +427,12 @@ def assess_summary(summary: dict[str, Any], config: dict[str, Any]) -> dict[str,
             if not isinstance(gate_record, dict):
                 critical_coverage_valid = False
                 break
-            opportunities = gate_record.get("task_opportunities")
-            failures = gate_record.get("failed_task_opportunities")
+            opportunities = gate_record.get("independent_opportunities")
+            failures = gate_record.get("failed_independent_opportunities")
             upper = gate_record.get("failure_rate_upper95")
             if (
-                not isinstance(opportunities, int)
+                gate_record.get("opportunity_unit") != "holdout_owner_attested_family"
+                or not isinstance(opportunities, int)
                 or isinstance(opportunities, bool)
                 or opportunities < minimum_critical_opportunities
                 or opportunities > task_count
@@ -499,6 +517,61 @@ def assess_summary(summary: dict[str, Any], config: dict[str, Any]) -> dict[str,
     return {"classification": classification, "promotable": classification == "promotable", "reasons": sorted(set(reasons)), "checks": checks}
 
 
+_PROCESS_CONTAINMENT_ENV = "CODEX_LIFECYCLE_PROCESS_TOKEN"
+_PROCESS_SNAPSHOT_TIMEOUT_SECONDS = 1.0
+
+
+def _posix_ps_path() -> Path | None:
+    for candidate in (Path("/bin/ps"), Path("/usr/bin/ps")):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _snapshot_posix_processes(*, include_environment: bool) -> dict[int, dict[str, Any]]:
+    ps_path = _posix_ps_path()
+    if ps_path is None:
+        raise PipelineError("POSIX process containment requires an absolute ps executable")
+    argv = [str(ps_path)]
+    if include_environment:
+        argv.append("eww")
+    argv.extend(["-axo", "pid=,ppid=,pgid=,sess=,lstart=,command="])
+    try:
+        result = subprocess.run(
+            argv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=_PROCESS_SNAPSHOT_TIMEOUT_SECONDS,
+            shell=False,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PipelineError("POSIX process containment snapshot failed") from exc
+    if result.returncode != 0:
+        raise PipelineError("POSIX process containment snapshot failed")
+    processes: dict[int, dict[str, Any]] = {}
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 9)
+        if len(parts) < 9:
+            continue
+        try:
+            pid, parent_pid, process_group_id, session_id = (int(value) for value in parts[:4])
+        except ValueError:
+            continue
+        processes[pid] = {
+            "pid": pid,
+            "parent_pid": parent_pid,
+            "process_group_id": process_group_id,
+            "session_id": session_id,
+            "started_at": " ".join(parts[4:9]),
+            "command": parts[9] if len(parts) == 10 else "",
+        }
+    if os.getpid() not in processes:
+        raise PipelineError("POSIX process containment snapshot omitted the current process")
+    return processes
+
+
 def _process_group_exists(process_group_id: int) -> bool:
     try:
         os.killpg(process_group_id, 0)
@@ -509,45 +582,180 @@ def _process_group_exists(process_group_id: int) -> bool:
     return True
 
 
+def _posix_process_isolation_available() -> bool:
+    return os.name == "posix" and _posix_ps_path() is not None and all(
+        (
+            hasattr(os, "killpg"),
+            hasattr(signal, "SIGTERM"),
+            hasattr(signal, "SIGKILL"),
+        )
+    )
+
+
+def require_posix_process_isolation(context: str) -> None:
+    """Fail before authority-bearing child launch when POSIX containment is unavailable."""
+
+    if not _posix_process_isolation_available():
+        raise PipelineError(f"{context} requires POSIX process-group isolation")
+    _snapshot_posix_processes(include_environment=False)
+
+
+def _containment_members(
+    snapshot: dict[int, dict[str, Any]],
+    *,
+    process_group_id: int,
+    token: str,
+) -> tuple[dict[int, dict[str, Any]], bool]:
+    token_assignment = f"{_PROCESS_CONTAINMENT_ENV}={token}"
+    members = {
+        pid: process
+        for pid, process in snapshot.items()
+        if pid == process_group_id or token_assignment in str(process.get("command", ""))
+    }
+    changed = True
+    while changed:
+        changed = False
+        for pid, process in snapshot.items():
+            if pid not in members and process.get("parent_pid") in members:
+                members[pid] = process
+                changed = True
+    escaped = any(
+        pid != process_group_id
+        and process.get("process_group_id") != process_group_id
+        for pid, process in members.items()
+    )
+    return members, escaped
+
+
+def _signal_containment(
+    process_group_id: int,
+    token: str,
+    signal_number: int,
+    errors: list[str],
+) -> bool:
+    escaped = False
+    try:
+        os.killpg(process_group_id, signal_number)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        errors.append(f"permission_denied:process_group:{signal_number}")
+    except OSError:
+        errors.append(f"signal_failed:process_group:{signal_number}")
+    try:
+        snapshot = _snapshot_posix_processes(include_environment=True)
+        members, escaped = _containment_members(
+            snapshot,
+            process_group_id=process_group_id,
+            token=token,
+        )
+    except PipelineError:
+        errors.append("process_snapshot_failed")
+        members = {}
+    for pid in sorted((pid for pid in members if pid != process_group_id), reverse=True):
+        try:
+            os.kill(pid, signal_number)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            errors.append(f"permission_denied:process:{pid}:{signal_number}")
+        except OSError:
+            errors.append(f"signal_failed:process:{pid}:{signal_number}")
+    return escaped
+
+
+def _containment_remaining(
+    process_group_id: int,
+    token: str,
+    errors: list[str],
+) -> tuple[bool, bool]:
+    group_exists = _process_group_exists(process_group_id)
+    try:
+        snapshot = _snapshot_posix_processes(include_environment=True)
+        members, escaped = _containment_members(
+            snapshot,
+            process_group_id=process_group_id,
+            token=token,
+        )
+    except PipelineError:
+        errors.append("process_snapshot_failed")
+        return True, False
+    return group_exists or bool(members), escaped
+
+
+def _close_process_pipes(process: subprocess.Popen[str]) -> None:
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+
 def _stop_process_group(
     process: subprocess.Popen[str],
     *,
+    token: str,
     termination_grace_seconds: float,
-) -> tuple[str, str]:
-    """Terminate and reap an isolated POSIX process group, or fail closed."""
+    stdout: str = "",
+    stderr: str = "",
+) -> tuple[str, str, bool]:
+    """Boundedly terminate the group and token-bound escaped descendants, or fail closed."""
 
     process_group_id = process.pid
-    try:
-        os.killpg(process_group_id, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-
+    errors: list[str] = []
+    escaped = _signal_containment(
+        process_group_id,
+        token,
+        signal.SIGTERM,
+        errors,
+    )
     deadline = time.monotonic() + termination_grace_seconds
-    while _process_group_exists(process_group_id) and time.monotonic() < deadline:
-        time.sleep(0.01)
+    remaining = True
+    while remaining and time.monotonic() < deadline:
+        remaining, newly_escaped = _containment_remaining(process_group_id, token, errors)
+        escaped = escaped or newly_escaped
+        if remaining:
+            time.sleep(0.01)
 
-    if _process_group_exists(process_group_id):
-        try:
-            os.killpg(process_group_id, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-    try:
-        stdout, stderr = process.communicate(timeout=max(termination_grace_seconds, 0.1))
-    except subprocess.TimeoutExpired as exc:
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-        stdout, stderr = process.communicate()
-        raise PipelineError("Timed-out command leader could not be reaped safely") from exc
-
+    if remaining:
+        escaped = _signal_containment(
+            process_group_id,
+            token,
+            signal.SIGKILL,
+            errors,
+        ) or escaped
     reap_deadline = time.monotonic() + max(termination_grace_seconds, 0.1)
-    while _process_group_exists(process_group_id) and time.monotonic() < reap_deadline:
-        time.sleep(0.01)
-    if _process_group_exists(process_group_id):
-        raise PipelineError("Timed-out command process group could not be reaped safely")
-    return stdout, stderr
+    while remaining and time.monotonic() < reap_deadline:
+        remaining, newly_escaped = _containment_remaining(process_group_id, token, errors)
+        escaped = escaped or newly_escaped
+        if remaining:
+            time.sleep(0.01)
+
+    if process.poll() is None:
+        try:
+            process.wait(timeout=max(termination_grace_seconds, 0.1))
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except (PermissionError, OSError):
+                errors.append("leader_kill_failed")
+            try:
+                process.wait(timeout=max(termination_grace_seconds, 0.1))
+            except subprocess.TimeoutExpired:
+                errors.append("leader_reap_timed_out")
+    _close_process_pipes(process)
+    final_remaining, newly_escaped = _containment_remaining(process_group_id, token, errors)
+    escaped = escaped or newly_escaped
+    if final_remaining:
+        errors.append("containment_members_survived")
+    if errors:
+        raise PipelineError(
+            "Isolated command containment cleanup failed closed: " + ",".join(sorted(set(errors)))
+        )
+    return stdout, stderr, escaped
 
 
 def run_command(
@@ -570,8 +778,11 @@ def run_command(
     if env:
         merged_env.update(env)
     if isolate_process_group:
-        if os.name != "posix":
-            raise PipelineError("Isolated process-group execution requires POSIX")
+        require_posix_process_isolation("Isolated command execution")
+        if env and _PROCESS_CONTAINMENT_ENV in env:
+            raise PipelineError("Command environment may not override the process-containment token")
+        containment_token = hashlib.sha256(os.urandom(32)).hexdigest()
+        merged_env[_PROCESS_CONTAINMENT_ENV] = containment_token
         process = subprocess.Popen(
             list(argv),
             cwd=cwd,
@@ -586,11 +797,56 @@ def run_command(
         try:
             stdout, stderr = process.communicate(input=input_text, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            stdout, stderr = _stop_process_group(
+            partial_stdout = exc.output if isinstance(exc.output, str) else ""
+            partial_stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            stdout, stderr, escaped = _stop_process_group(
                 process,
+                token=containment_token,
+                termination_grace_seconds=termination_grace_seconds,
+                stdout=partial_stdout,
+                stderr=partial_stderr,
+            )
+            if escaped:
+                raise PipelineError(
+                    "Isolated command descendant escaped its process group; cleanup completed but retry is forbidden"
+                ) from exc
+            raise subprocess.TimeoutExpired(list(argv), timeout, output=stdout, stderr=stderr) from exc
+        except BaseException:
+            _stop_process_group(
+                process,
+                token=containment_token,
                 termination_grace_seconds=termination_grace_seconds,
             )
-            raise subprocess.TimeoutExpired(list(argv), timeout, output=stdout, stderr=stderr) from exc
+            raise
+        try:
+            snapshot = _snapshot_posix_processes(include_environment=True)
+            members, escaped = _containment_members(
+                snapshot,
+                process_group_id=process.pid,
+                token=containment_token,
+            )
+        except PipelineError as exc:
+            _stop_process_group(
+                process,
+                token=containment_token,
+                termination_grace_seconds=termination_grace_seconds,
+                stdout=stdout,
+                stderr=stderr,
+            )
+            raise PipelineError("Isolated command containment could not be verified after leader exit") from exc
+        if _process_group_exists(process.pid) or members:
+            _stop_process_group(
+                process,
+                token=containment_token,
+                termination_grace_seconds=termination_grace_seconds,
+                stdout=stdout,
+                stderr=stderr,
+            )
+            suffix = " after a descendant escaped its process group" if escaped else ""
+            raise PipelineError(
+                "An isolated command descendant outlived its leader"
+                f"{suffix}; descendants were terminated before continuation"
+            )
         result = subprocess.CompletedProcess(list(argv), process.returncode, stdout, stderr)
     else:
         result = subprocess.run(

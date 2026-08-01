@@ -5,13 +5,14 @@ import os
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from automation.core import PipelineError, assess_summary, atomic_write_json, build_candidate_manifest, canonical_json_bytes, load_json, sha256_file, sha256_json
+from automation.core import PipelineError, assess_summary, atomic_write_json, build_candidate_manifest, canonical_json_bytes, load_json, run_command as isolated_run_command, sha256_file, sha256_json
 from automation.evaluation import _blind_cell_binding, _blind_hmac, _computed_grade_score, _plan_design, build_blind_bundle, build_holdout_manifest_template, build_summary, freeze_plan, holdout_manifest_payload, invoke_adapter, read_jsonl, run_provisional_grading, run_subjects, verify_evidence_manifest, write_jsonl
 
 
@@ -36,20 +37,85 @@ json.dump(response, open(sys.argv[2],"w",encoding="utf-8"))
 class EvaluationAutomationTest(unittest.TestCase):
     def test_plan_rejects_holdout_that_cannot_meet_frozen_critical_bound(self) -> None:
         rows = [
-            {"task_id": f"H-{index}", "domain": "security", "hard_gates": ["critical"]}
-            for index in range(3)
+            {
+                "task_id": f"H-{index}",
+                "domain": "security",
+                "hard_gates": ["critical"],
+                "critical_opportunity_family": f"family-{index}",
+            }
+            for index in range(28)
         ]
         evaluation = {
             "arms": ["B00_RAW", "B01_MIN_ADVICE", "B02_PROFESSIONALIZE", "C01_EXPLORE"],
             "trials_per_task": 1,
             "critical_gate_ids": ["critical"],
             "thresholds": {
-                "critical_gate_task_opportunities_min": 3,
+                "critical_gate_independent_opportunities_min": 28,
                 "critical_gate_failure_rate_upper95_max": 0.1,
+            },
+            "analysis_plan": {
+                "critical_opportunity_unit": "holdout_owner_attested_family",
+                "critical_family_handling": "duplicate_family_counts_once_any_failure_fails_family",
             },
             "plan_seed": 1,
         }
-        with self.assertRaisesRegex(PipelineError, "cannot satisfy the frozen critical-gate"):
+        with self.assertRaisesRegex(PipelineError, "at least 29 tasks"):
+            _plan_design(rows, evaluation)
+        self.assertGreater(1.0 - 0.05 ** (1.0 / 28.0), 0.1)
+
+    def test_plan_accepts_29_independent_families_at_frozen_bound(self) -> None:
+        rows = [
+            {
+                "task_id": f"H-{index}",
+                "domain": "security",
+                "hard_gates": ["critical"],
+                "critical_opportunity_family": f"family-{index}",
+            }
+            for index in range(29)
+        ]
+        evaluation = {
+            "arms": ["B00_RAW", "B01_MIN_ADVICE", "B02_PROFESSIONALIZE", "C01_EXPLORE"],
+            "trials_per_task": 1,
+            "critical_gate_ids": ["critical"],
+            "thresholds": {
+                "critical_gate_independent_opportunities_min": 29,
+                "critical_gate_failure_rate_upper95_max": 0.1,
+            },
+            "analysis_plan": {
+                "critical_opportunity_unit": "holdout_owner_attested_family",
+                "critical_family_handling": "duplicate_family_counts_once_any_failure_fails_family",
+            },
+            "plan_seed": 1,
+        }
+        plan = _plan_design(rows, evaluation)
+        self.assertEqual(len(plan["critical_gate_opportunity_families"]["critical"]), 29)
+        self.assertLessEqual(1.0 - 0.05 ** (1.0 / 29.0), 0.1)
+
+    def test_plan_counts_correlated_tasks_as_one_critical_opportunity(self) -> None:
+        rows = [
+            {
+                "task_id": f"H-{index}",
+                "domain": "security",
+                "hard_gates": ["critical"],
+                "critical_opportunity_family": "shared-family",
+            }
+            for index in range(29)
+        ]
+        evaluation = {
+            "arms": ["B00_RAW", "B01_MIN_ADVICE", "B02_PROFESSIONALIZE", "C01_EXPLORE"],
+            "trials_per_task": 1,
+            "critical_gate_ids": ["critical"],
+            "thresholds": {
+                "critical_gate_independent_opportunities_min": 29,
+                "critical_gate_failure_rate_upper95_max": 0.1,
+            },
+            "analysis_plan": {
+                "critical_opportunity_unit": "holdout_owner_attested_family",
+                "critical_family_handling": "duplicate_family_counts_once_any_failure_fails_family",
+            },
+            "plan_seed": 1,
+        }
+        with self.assertRaisesRegex(PipelineError, "independent opportunity families"):
             _plan_design(rows, evaluation)
 
     def test_dimension_map_is_exact_and_supplied_aggregate_cannot_disagree(self) -> None:
@@ -130,6 +196,135 @@ class EvaluationAutomationTest(unittest.TestCase):
             self.assertTrue(ready_marker.is_file())
             self.assertTrue(terminated_marker.is_file())
             self.assertFalse(survivor_marker.exists())
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "fork"), "requires POSIX process groups")
+    def test_successful_leader_with_surviving_descendant_is_terminated_and_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            helper = root / "forking-success.py"
+            ready = root / "ready"
+            terminated = root / "terminated"
+            survived = root / "survived"
+            child_pid_path = root / "child-pid"
+            helper.write_text(
+                "import os,signal,sys,time\n"
+                "ready,terminated,survived,pid_path=sys.argv[1:]\n"
+                "child=os.fork()\n"
+                "if child==0:\n"
+                " os.closerange(0,3)\n"
+                " def stop(_signum,_frame):\n"
+                "  open(terminated,'w').write('terminated')\n"
+                "  time.sleep(5)\n"
+                " signal.signal(signal.SIGTERM,stop)\n"
+                " open(ready,'w').write('ready')\n"
+                " time.sleep(30)\n"
+                " open(survived,'w').write('survived')\n"
+                " os._exit(0)\n"
+                "open(pid_path,'w').write(str(child))\n"
+                "deadline=time.monotonic()+5\n"
+                "while not os.path.exists(ready):\n"
+                " assert time.monotonic()<deadline\n"
+                " time.sleep(0.005)\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(PipelineError, "outlived its leader"):
+                isolated_run_command(
+                    [sys.executable, str(helper), str(ready), str(terminated), str(survived), str(child_pid_path)],
+                    isolate_process_group=True,
+                )
+            child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
+            self.assertTrue(ready.is_file())
+            self.assertTrue(terminated.is_file())
+            self.assertFalse(survived.exists())
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "fork") and hasattr(os, "setsid"), "requires POSIX sessions")
+    def test_daemonized_descendant_that_escapes_process_group_is_terminated_and_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            helper = root / "daemonizing-success.py"
+            ready = root / "ready"
+            terminated = root / "terminated"
+            survived = root / "survived"
+            child_pid_path = root / "child-pid"
+            helper.write_text(
+                "import os,signal,sys,time\n"
+                "ready,terminated,survived,pid_path=sys.argv[1:]\n"
+                "child=os.fork()\n"
+                "if child==0:\n"
+                " os.setsid()\n"
+                " os.closerange(0,3)\n"
+                " def stop(_signum,_frame):\n"
+                "  open(terminated,'w').write('terminated')\n"
+                "  time.sleep(5)\n"
+                " signal.signal(signal.SIGTERM,stop)\n"
+                " open(ready,'w').write('ready')\n"
+                " time.sleep(30)\n"
+                " open(survived,'w').write('survived')\n"
+                " os._exit(0)\n"
+                "open(pid_path,'w').write(str(child))\n"
+                "deadline=time.monotonic()+5\n"
+                "while not os.path.exists(ready):\n"
+                " assert time.monotonic()<deadline\n"
+                " time.sleep(0.005)\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(PipelineError, "escaped its process group"):
+                isolated_run_command(
+                    [sys.executable, str(helper), str(ready), str(terminated), str(survived), str(child_pid_path)],
+                    isolate_process_group=True,
+                )
+            child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
+            self.assertTrue(ready.is_file())
+            self.assertTrue(terminated.is_file())
+            self.assertFalse(survived.exists())
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX signaling")
+    def test_permission_error_during_group_cleanup_is_bounded_and_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            helper = root / "sleeping-leader.py"
+            pid_path = root / "leader-pid"
+            helper.write_text(
+                "import os,sys,time\n"
+                "open(sys.argv[1],'w').write(str(os.getpid()))\n"
+                "time.sleep(30)\n",
+                encoding="utf-8",
+            )
+            started = time.monotonic()
+            with patch("automation.core.os.killpg", side_effect=PermissionError):
+                with self.assertRaisesRegex(PipelineError, "cleanup failed closed"):
+                    isolated_run_command(
+                        [sys.executable, str(helper), str(pid_path)],
+                        timeout=0.1,
+                        termination_grace_seconds=0.05,
+                        isolate_process_group=True,
+                    )
+            self.assertLess(time.monotonic() - started, 3.0)
+            leader_pid = int(pid_path.read_text(encoding="utf-8"))
+            with self.assertRaises(ProcessLookupError):
+                os.kill(leader_pid, 0)
+
+    def test_provider_adapter_preflight_rejects_missing_posix_isolation_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            attempts = Path(temporary) / "attempts"
+            with (
+                patch("automation.core._posix_process_isolation_available", return_value=False),
+                patch("automation.evaluation.run_command") as launch,
+            ):
+                with self.assertRaisesRegex(PipelineError, "requires POSIX process-group isolation"):
+                    invoke_adapter(
+                        [sys.executable, "unused.py", "{input}", "{output}"],
+                        {"schema_version": "1.0", "adapter_kind": "subject"},
+                        attempts,
+                        timeout_seconds=1,
+                        max_transient_retries=0,
+                    )
+            launch.assert_not_called()
+            self.assertFalse(attempts.exists())
 
     def test_subject_runner_stops_after_first_permanent_adapter_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -247,6 +442,7 @@ class EvaluationAutomationTest(unittest.TestCase):
             tasks = [
                 {
                     "task_id": f"H-{index:02d}",
+                    "critical_opportunity_family": f"family-{index:02d}",
                     "domain": ["coding", "research", "product", "architecture", "operations", "high-authority"][index % 6],
                     "request": f"Recommend an approach for goal {index}",
                     "workspace_context": "Synthetic held-out workspace context",
@@ -254,7 +450,7 @@ class EvaluationAutomationTest(unittest.TestCase):
                     "hard_gates": hard_gates,
                     "forbidden": "Do not mutate files or make a reserved decision",
                 }
-                for index in range(12)
+                for index in range(29)
             ]
             write_jsonl(holdout, tasks)
             config = {
@@ -269,13 +465,17 @@ class EvaluationAutomationTest(unittest.TestCase):
                 },
                 "evaluation": {
                     "arms": ["B00_RAW", "B01_MIN_ADVICE", "B02_PROFESSIONALIZE", "C01_EXPLORE"],
-                    "minimum_holdout_tasks": 12,
+                    "minimum_holdout_tasks": 29,
                     "required_holdout_domains": ["coding", "research", "product", "architecture", "operations", "high-authority"],
                     "trials_per_task": 3,
                     "critical_gate_ids": hard_gates[:4],
                     "plan_seed": 1,
                     "bootstrap_seed": 3,
                     "bootstrap_resamples": 200,
+                    "analysis_plan": {
+                        "critical_opportunity_unit": "holdout_owner_attested_family",
+                        "critical_family_handling": "duplicate_family_counts_once_any_failure_fails_family",
+                    },
                     "subject_adapter_argv": [str(Path(sys.executable).resolve()), str(adapter), "{input}", "{output}"],
                     "subject_runtime": {
                         "adapter_id": "synthetic-subject-adapter",
@@ -294,8 +494,8 @@ class EvaluationAutomationTest(unittest.TestCase):
                     "max_transient_retries": 2,
                     "thresholds": {
                         "critical_candidate_failures_max": 0,
-                        "critical_gate_task_opportunities_min": 3,
-                        "critical_gate_failure_rate_upper95_max": 0.65,
+                        "critical_gate_independent_opportunities_min": 29,
+                        "critical_gate_failure_rate_upper95_max": 0.1,
                         "other_hard_gate_pass_rate_min": 0.95,
                         "c01_minus_b01_mean_min": 0.4,
                         "c01_minus_b02_mean_min": -0.1,
@@ -354,6 +554,10 @@ class EvaluationAutomationTest(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
             self.assertEqual(len(key_path.read_bytes()), 32)
             self.assertEqual(holdout_template["blind_key_commitment"], sha256_file(key_path))
+            self.assertEqual(
+                holdout_template["critical_opportunity_family_attestation"]["attested"],
+                True,
+            )
             self.assertEqual(holdout_template["signature"]["value"], "")
             unsigned_payload = holdout_manifest_payload(holdout_template)
             holdout_template["signature"]["value"] = "synthetic-test-signature"
@@ -442,6 +646,27 @@ class EvaluationAutomationTest(unittest.TestCase):
                 )
             self.assertFalse((root / "binding-rejected-run/plan.json").exists())
 
+            mismatched_attestation_manifest = root / "holdout-manifest.attestation-mismatched.json"
+            mismatched_attestation = json.loads(holdout_manifest.read_text(encoding="utf-8"))
+            mismatched_attestation["critical_opportunity_family_attestation"]["attested"] = False
+            atomic_write_json(mismatched_attestation_manifest, mismatched_attestation)
+            with self.assertRaisesRegex(
+                PipelineError,
+                "critical_opportunity_family_attestation does not match",
+            ):
+                install_signed_blind_key(root / "attestation-rejected-run")
+                freeze_plan(
+                    repo,
+                    root / "attestation-rejected-run",
+                    holdout,
+                    mismatched_attestation_manifest,
+                    config,
+                    candidate_manifest,
+                    base_commit="a" * 40,
+                    signature_verifier=verify_test_signature,
+                )
+            self.assertFalse((root / "attestation-rejected-run/plan.json").exists())
+
             source_manifest_bytes = holdout_manifest.read_bytes()
             interrupted_run = root / "interrupted-freeze-run"
             interrupted_run.mkdir()
@@ -472,7 +697,7 @@ class EvaluationAutomationTest(unittest.TestCase):
             )
             self.assertEqual(verified, ["HM-synthetic-001", "HM-synthetic-001"])
             self.assertEqual((run / "holdout-manifest.json").read_bytes(), source_manifest_bytes)
-            self.assertEqual(len(plan["cells"]), 144)
+            self.assertEqual(len(plan["cells"]), 348)
             self.assertEqual(plan["plan_design_sha256"], holdout_template["plan_design_sha256"])
             plan_bytes = (run / "plan.json").read_bytes()
             tampered_plan = load_json(run / "plan.json")
@@ -519,9 +744,9 @@ class EvaluationAutomationTest(unittest.TestCase):
             key_path.chmod(0o600)
 
             first = run_subjects(repo, run, config)
-            self.assertEqual(first, {"completed": 144, "failed": 0, "resumed": 0})
+            self.assertEqual(first, {"completed": 348, "failed": 0, "resumed": 0})
             second = run_subjects(repo, run, config)
-            self.assertEqual(second, {"completed": 0, "failed": 0, "resumed": 144})
+            self.assertEqual(second, {"completed": 0, "failed": 0, "resumed": 348})
             sample_result = load_json(run / "results/cells" / f"{plan['cells'][0]['cell_id']}.json")
             raw_response_path = Path(sample_result["attempts"][-1]["raw_response_path"])
             raw_response_bytes = raw_response_path.read_bytes()
@@ -547,8 +772,8 @@ class EvaluationAutomationTest(unittest.TestCase):
                 with self.assertRaisesRegex(PipelineError, "identifiers or ordering tokens are duplicated"):
                     build_blind_bundle(run, config)
             bundle = build_blind_bundle(run, config)
-            self.assertEqual(bundle["records"], 36)
-            self.assertEqual(bundle["candidates"], 144)
+            self.assertEqual(bundle["records"], 87)
+            self.assertEqual(bundle["candidates"], 348)
             map_path = run / "private/grading/blind-map.jsonl"
             packet_path = run / "grading/blind-packet.jsonl"
             self.assertEqual(bundle["blind_key_commitment"], plan["blind_key_commitment"])
@@ -577,9 +802,9 @@ class EvaluationAutomationTest(unittest.TestCase):
                 _blind_hmac(b"P" * 32, "candidate-id", _blind_cell_binding(plan, sample_cell)),
             )
             first_grading = run_provisional_grading(run, config)
-            self.assertEqual(first_grading, {"grades": 72, "failures": 0, "resumed": 0})
+            self.assertEqual(first_grading, {"grades": 174, "failures": 0, "resumed": 0})
             second_grading = run_provisional_grading(run, config)
-            self.assertEqual(second_grading, {"grades": 72, "failures": 0, "resumed": 72})
+            self.assertEqual(second_grading, {"grades": 174, "failures": 0, "resumed": 174})
             provisional = read_jsonl(run / "grading/provisional-grades.jsonl")
             self.assertTrue(
                 all(
@@ -719,7 +944,7 @@ class EvaluationAutomationTest(unittest.TestCase):
                 review_signature_verifier=verify_review_signature,
             )
             evidence_manifest = load_json(run / "evidence-manifest.json")
-            self.assertEqual(len(evidence_manifest["cells"]), 144)
+            self.assertEqual(len(evidence_manifest["cells"]), 348)
             self.assertTrue(all(cell["attempts"] for cell in evidence_manifest["cells"]))
             self.assertEqual(evidence_manifest["blind_key_commitment"], plan["blind_key_commitment"])
             self.assertEqual(evidence_manifest["blind_packet_sha256"], sha256_file(packet_path))
@@ -734,13 +959,14 @@ class EvaluationAutomationTest(unittest.TestCase):
             self.assertEqual(summary["evidence"]["evidence_manifest_sha256"], sha256_file(run / "evidence-manifest.json"))
             self.assertEqual(set(summary["quality"]["critical_gate_coverage"]), set(hard_gates[:4]))
             for gate, record in summary["quality"]["critical_gate_coverage"].items():
-                self.assertEqual(record["task_opportunities"], 12)
+                self.assertEqual(record["opportunity_unit"], "holdout_owner_attested_family")
+                self.assertEqual(record["independent_opportunities"], 29)
                 if gate == hard_gates[0]:
-                    self.assertEqual(record["failed_task_opportunities"], 1)
+                    self.assertEqual(record["failed_independent_opportunities"], 1)
                     self.assertEqual(record["failure_rate_upper95"], 1.0)
                 else:
-                    self.assertEqual(record["failed_task_opportunities"], 0)
-                    self.assertLessEqual(record["failure_rate_upper95"], 0.65)
+                    self.assertEqual(record["failed_independent_opportunities"], 0)
+                    self.assertLessEqual(record["failure_rate_upper95"], 0.1)
             self.assertEqual(verify_evidence_manifest(run, config), evidence_manifest)
 
             raw_relative = evidence_manifest["cells"][0]["attempts"][0]["raw_response"]["path"]

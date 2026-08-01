@@ -8,6 +8,7 @@ Create a repository-local `review-skill-candidate` package that turns a skill or
 
 - Resolve base and head refs to immutable commit SHAs and hash the complete diff.
 - Index every changed file and allowlisted policy with content hashes.
+- Bind deterministic validation claims to a content-projection manifest, exact argument arrays, tool-version probes, UTC timestamps, execution statuses, and a hashed artifact manifest.
 - Create isolated evidence/methodology, engineering/reproducibility, and skill-safety/operations assignments.
 - Require schema-shaped findings with file/line evidence, declared coverage, counterevidence, confidence, and limitations.
 - Bind adjudication to exact reviewer-submission hashes and require every finding to receive one disposition.
@@ -20,6 +21,7 @@ Create a repository-local `review-skill-candidate` package that turns a skill or
 
 - `skills/review-skill-candidate/`
 - deterministic packet and validation script
+- self-reference-safe validation-evidence recorder and verifier
 - schemas, templates, role cards, and workflow contract
 - synthetic regression fixtures and unit tests
 - a frozen, provisional PR #1 review bundle

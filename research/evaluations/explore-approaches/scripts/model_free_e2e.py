@@ -151,7 +151,7 @@ def run(output: Path) -> dict[str, object]:
     tests = run_command(
         [sys.executable, "-m", "unittest", "discover", "-s", str(EVALUATION_ROOT / "tests"), "-q"],
         cwd=REPO_ROOT,
-        timeout=120,
+        timeout=180,
         env={NESTED_E2E_ENV: "1"},
         check=False,
     )
@@ -165,7 +165,7 @@ def run(output: Path) -> dict[str, object]:
             "-q",
         ],
         cwd=REPO_ROOT,
-        timeout=120,
+        timeout=180,
         check=False,
     )
     checks["fake_adapter_evaluation_chain"] = fake_adapter_evaluation.returncode == 0
@@ -226,6 +226,7 @@ def run(output: Path) -> dict[str, object]:
         holdout_rows = [
             {
                 "task_id": f"MF-{index:03d}",
+                "critical_opportunity_family": f"MF-FAMILY-{index:03d}",
                 "domain": domains[index % len(domains)],
                 "request": f"Recommend an approach for model-free goal {index}",
                 "workspace_context": "Synthetic private model-free workspace context",

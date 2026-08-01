@@ -64,7 +64,7 @@ class ModelFreeE2ERegressionTest(unittest.TestCase):
         completed = run_command(
             [sys.executable, str(script), "--output", str(output)],
             cwd=checkout,
-            timeout=240,
+            timeout=360,
             check=False,
         )
         self.assertEqual(

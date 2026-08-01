@@ -15,6 +15,7 @@ Use this procedure only after verifying the actual ChatGPT account, model, memor
 - Do not place reviewer outputs in shared project memory, shared instructions, or a common uploaded folder before all three close.
 - Do not include expected findings, seeded labels, author explanations, proposed fixes, or another reviewer’s scope decisions.
 - If the product configuration may share memory or context across reviewers, set `independent_context` to false and treat the cycle as contaminated rather than guessing.
+- Assign every reviewer a stable identity distinct from every manifest packet author after Unicode normalization, whitespace removal, and case folding. Set `independent_from_authors` to true only when that separation is real; otherwise block the review.
 
 ## Reviewer prompt
 

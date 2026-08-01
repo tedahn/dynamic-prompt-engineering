@@ -12,14 +12,15 @@
     "reviewer": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["role", "reviewer_id", "surface", "model", "reviewed_at", "independent_context"],
+      "required": ["role", "reviewer_id", "surface", "model", "reviewed_at", "independent_context", "independent_from_authors"],
       "properties": {
         "role": {"enum": ["evidence-methodology", "engineering-reproducibility", "skill-safety-operations"]},
         "reviewer_id": {"type": "string", "minLength": 1},
         "surface": {"type": "string", "minLength": 1},
         "model": {"type": ["string", "null"]},
         "reviewed_at": {"type": "string", "minLength": 1},
-        "independent_context": {"const": true}
+        "independent_context": {"const": true},
+        "independent_from_authors": {"const": true}
       }
     },
     "scope": {

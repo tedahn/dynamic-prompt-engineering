@@ -19,7 +19,7 @@ No row implies another. A merge may publish an explicitly experimental candidate
 3. Open a proposed gate for one decision and one target.
 4. Build a shared core context packet.
 5. Create role-specific assignments without other reviewer outputs.
-6. Run reviewers independently and retain raw structured submissions.
+6. Run reviewers independently, require each reviewer to affirm independence from packet authors, verify its canonical identity differs from every packet author, and retain raw structured submissions.
 7. Freeze submission hashes.
 8. Assign an adjudicator whose canonical identity differs from every packet author and reviewer, then adjudicate evidence, conflicts, and severity.
 9. Run deterministic bundle validation.
@@ -46,6 +46,6 @@ Treat a missing or late reviewer/adjudicator output as incomplete, never as a pa
 
 ## Merge gate
 
-Mechanical eligibility requires all required roles, unique reviewer identities, an adjudicator identity distinct from every reviewer and packet author, target-integrity checks, valid evidence anchors, an adjudication bound to exact submission hashes, and zero upheld unresolved P0/P1 findings. The result remains `provisional` until the named human decides.
+Mechanical eligibility requires all required roles, reviewers that affirm author independence, canonical reviewer identities distinct from every packet author and one another, an adjudicator identity distinct from every reviewer and packet author, target-integrity checks, valid evidence anchors, an adjudication bound to exact submission hashes, and zero upheld unresolved P0/P1 findings. The result remains `provisional` until the named human decides.
 
 Reopen or supersede the review if any target or decision-critical input changes.

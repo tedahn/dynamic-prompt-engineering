@@ -24,13 +24,13 @@ def promotable_summary() -> dict:
     return {
         "integrity": {"valid": True, "contamination_detected": False},
         "coverage": {
-            "tasks": 12,
+            "tasks": 29,
             "trials_per_task": 3,
-            "expected_cells": 144,
-            "complete_cells": 144,
-            "final_graded_cells": 144,
-            "expected_comparisons": 36,
-            "final_comparisons": 36,
+            "expected_cells": 348,
+            "complete_cells": 348,
+            "final_graded_cells": 348,
+            "expected_comparisons": 87,
+            "final_comparisons": 87,
             "failed_cells": 0,
             "human_final": True,
             "adjudication_complete": True,
@@ -40,9 +40,10 @@ def promotable_summary() -> dict:
             "critical_candidate_failures": 0,
             "critical_gate_coverage": {
                 gate: {
-                    "task_opportunities": 12,
-                    "failed_task_opportunities": 0,
-                    "failure_rate_upper95": 1.0 - 0.05 ** (1.0 / 12.0),
+                    "opportunity_unit": "holdout_owner_attested_family",
+                    "independent_opportunities": 29,
+                    "failed_independent_opportunities": 0,
+                    "failure_rate_upper95": 1.0 - 0.05 ** (1.0 / 29.0),
                 }
                 for gate in CRITICAL_GATES
             },
@@ -58,12 +59,12 @@ def promotable_summary() -> dict:
             "token_ratio": {"upper95": 1.5},
         },
         "analysis_coverage": {
-            "expected_task_clusters": 12,
-            "c01_minus_b01_task_clusters": 12,
-            "c01_minus_b02_task_clusters": 12,
-            "preference_task_clusters": 12,
-            "latency_ratio_task_clusters": 12,
-            "token_ratio_task_clusters": 12,
+            "expected_task_clusters": 29,
+            "c01_minus_b01_task_clusters": 29,
+            "c01_minus_b02_task_clusters": 29,
+            "preference_task_clusters": 29,
+            "latency_ratio_task_clusters": 29,
+            "token_ratio_task_clusters": 29,
         },
     }
 
@@ -72,13 +73,17 @@ def config() -> dict:
     return {
         "evaluation": {
             "arms": ["B00_RAW", "B01_MIN_ADVICE", "B02_PROFESSIONALIZE", "C01_EXPLORE"],
-            "minimum_holdout_tasks": 12,
+            "minimum_holdout_tasks": 29,
             "trials_per_task": 3,
             "critical_gate_ids": CRITICAL_GATES,
+            "analysis_plan": {
+                "critical_opportunity_unit": "holdout_owner_attested_family",
+                "critical_family_handling": "duplicate_family_counts_once_any_failure_fails_family",
+            },
             "thresholds": {
                 "critical_candidate_failures_max": 0,
-                "critical_gate_task_opportunities_min": 3,
-                "critical_gate_failure_rate_upper95_max": 0.65,
+                "critical_gate_independent_opportunities_min": 29,
+                "critical_gate_failure_rate_upper95_max": 0.1,
                 "other_hard_gate_pass_rate_min": 0.95,
                 "c01_minus_b01_mean_min": 0.4,
                 "c01_minus_b02_mean_min": -0.1,
@@ -108,23 +113,23 @@ class AssessmentTest(unittest.TestCase):
 
     def test_missing_final_grade_is_inconclusive(self) -> None:
         summary = promotable_summary()
-        summary["coverage"]["final_graded_cells"] = 143
+        summary["coverage"]["final_graded_cells"] = 347
         self.assertEqual(assess_summary(summary, config())["classification"], "inconclusive")
 
     def test_actual_task_count_above_minimum_uses_exact_denominators(self) -> None:
         summary = promotable_summary()
         summary["coverage"].update(
             {
-                "tasks": 15,
-                "expected_cells": 180,
-                "complete_cells": 180,
-                "final_graded_cells": 180,
-                "expected_comparisons": 45,
-                "final_comparisons": 45,
+                "tasks": 30,
+                "expected_cells": 360,
+                "complete_cells": 360,
+                "final_graded_cells": 360,
+                "expected_comparisons": 90,
+                "final_comparisons": 90,
             }
         )
         summary["analysis_coverage"] = {
-            key: 15 for key in summary["analysis_coverage"]
+            key: 30 for key in summary["analysis_coverage"]
         }
         self.assertEqual(assess_summary(summary, config())["classification"], "promotable")
 
@@ -147,13 +152,31 @@ class AssessmentTest(unittest.TestCase):
         self.assertEqual(assessment["classification"], "inconclusive")
         self.assertIsNone(assessment["checks"]["critical_gate_opportunity_coverage"])
 
+    def test_unattested_critical_opportunity_unit_is_inconclusive(self) -> None:
+        summary = promotable_summary()
+        for record in summary["quality"]["critical_gate_coverage"].values():
+            record["opportunity_unit"] = "task_cluster"
+        assessment = assess_summary(summary, config())
+        self.assertEqual(assessment["classification"], "inconclusive")
+        self.assertIsNone(assessment["checks"]["critical_gate_opportunity_coverage"])
+
+    def test_live_config_cannot_weaken_production_safety_floors(self) -> None:
+        weak_config = config()
+        weak_config["evaluation"]["minimum_holdout_tasks"] = 12
+        weak_config["evaluation"]["thresholds"]["critical_gate_independent_opportunities_min"] = 3
+        weak_config["evaluation"]["thresholds"]["critical_gate_failure_rate_upper95_max"] = 0.65
+        assessment = assess_summary(promotable_summary(), weak_config)
+        self.assertEqual(assessment["classification"], "inconclusive")
+        self.assertFalse(assessment["promotable"])
+        self.assertIsNone(assessment["checks"]["critical_gate_opportunity_coverage"])
+
     def test_weak_zero_failure_bound_is_inconclusive(self) -> None:
         summary = promotable_summary()
         for record in summary["quality"]["critical_gate_coverage"].values():
             record.update(
                 {
-                    "task_opportunities": 2,
-                    "failure_rate_upper95": 1.0 - 0.05 ** (1.0 / 2.0),
+                    "independent_opportunities": 28,
+                    "failure_rate_upper95": 1.0 - 0.05 ** (1.0 / 28.0),
                 }
             )
         assessment = assess_summary(summary, config())
@@ -165,12 +188,12 @@ class AssessmentTest(unittest.TestCase):
         for record in summary["quality"]["critical_gate_coverage"].values():
             record.update(
                 {
-                    "task_opportunities": 3,
-                    "failure_rate_upper95": 1.0 - 0.05 ** (1.0 / 3.0),
+                    "independent_opportunities": 29,
+                    "failure_rate_upper95": 1.0 - 0.05 ** (1.0 / 29.0),
                 }
             )
         stricter_config = config()
-        stricter_config["evaluation"]["thresholds"]["critical_gate_failure_rate_upper95_max"] = 0.5
+        stricter_config["evaluation"]["thresholds"]["critical_gate_failure_rate_upper95_max"] = 0.05
         assessment = assess_summary(summary, stricter_config)
         self.assertEqual(assessment["classification"], "inconclusive")
         self.assertIsNone(assessment["checks"]["critical_gate_rate_bound"])
@@ -180,8 +203,8 @@ class AssessmentTest(unittest.TestCase):
         for record in summary["quality"]["critical_gate_coverage"].values():
             record.update(
                 {
-                    "task_opportunities": 13,
-                    "failure_rate_upper95": 1.0 - 0.05 ** (1.0 / 13.0),
+                    "independent_opportunities": 30,
+                    "failure_rate_upper95": 1.0 - 0.05 ** (1.0 / 30.0),
                 }
             )
         assessment = assess_summary(summary, config())

@@ -780,7 +780,7 @@ Read `context-pack.md`, then inspect the frozen commits and only the source poin
 
 Do not read `submissions/` or another assignment. Do not modify files, approve merge, infer behavioral efficacy, or authorize promotion or installation.
 
-Write exactly one JSON object matching `schemas/review-submission.schema.json` to `submissions/{role}.json`. Use reviewer role `{role}`, set `independent_context` to true only if isolation held, declare reviewed and not-reviewed scope, and anchor every finding to repository-relative file lines. An empty findings array is allowed only after the declared concerns were inspected.
+Write exactly one JSON object matching `schemas/review-submission.schema.json` to `submissions/{role}.json`. Use reviewer role `{role}`; set `independent_context` to true only if isolation held, and set `independent_from_authors` to true only when your canonical identity differs from every `manifest.json` packet author. Declare reviewed and not-reviewed scope, and anchor every finding to repository-relative file lines. An empty findings array is allowed only after the declared concerns were inspected.
 """
 
 
@@ -1015,6 +1015,8 @@ def validate_submission(
     manifest: dict[str, Any],
     schema: dict[str, Any],
     errors: list[str],
+    *,
+    strict_identity_separation: bool = True,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     if not path.is_file():
         errors.append(f"missing reviewer submission: {role}")
@@ -1036,12 +1038,20 @@ def validate_submission(
     if not exact_target(value.get("target"), target):
         errors.append(f"{role} target mismatch")
     reviewer = value.get("reviewer")
-    if not isinstance(reviewer, dict) or reviewer.get("role") != role:
+    if not isinstance(reviewer, dict):
         errors.append(f"{role} reviewer role mismatch")
-    elif reviewer.get("independent_context") is not True:
-        errors.append(f"{role} independence not affirmed")
-    elif not reviewer.get("reviewer_id"):
-        errors.append(f"{role} reviewer_id missing")
+    else:
+        if reviewer.get("role") != role:
+            errors.append(f"{role} reviewer role mismatch")
+        if reviewer.get("independent_context") is not True:
+            errors.append(f"{role} independent context not affirmed")
+        if (
+            strict_identity_separation
+            and reviewer.get("independent_from_authors") is not True
+        ):
+            errors.append(f"{role} independence from authors not affirmed")
+        if canonical_identity(reviewer.get("reviewer_id")) is None:
+            errors.append(f"{role} reviewer_id missing or invalid")
     scope = value.get("scope")
     if not isinstance(scope, dict) or not scope.get("reviewed_files") or not scope.get("concerns_checked"):
         errors.append(f"{role} scope is incomplete")
@@ -1275,6 +1285,7 @@ def validate_bundle(args: argparse.Namespace) -> dict[str, Any]:
             manifest,
             schemas.get("review_submission"),
             errors,
+            strict_identity_separation=not legacy_contract,
         )
         if submission is not None:
             submissions[role] = submission
@@ -1288,6 +1299,10 @@ def validate_bundle(args: argparse.Namespace) -> dict[str, Any]:
                         errors.append(f"{role} reviewer identity is invalid")
                     else:
                         reviewer_ids.append(identity)
+                        if identity in packet_author_ids:
+                            errors.append(
+                                f"{role} reviewer identity matches a packet author identity"
+                            )
         for finding in role_findings:
             finding_id = finding.get("finding_id")
             if not finding_id:

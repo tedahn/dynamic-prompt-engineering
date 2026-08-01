@@ -185,6 +185,36 @@
       "validation": "Authorization records now distinguish the three discarded replacement preflight cells from all unauthorized scored cells, and promotion requires bounded independent task opportunities plus an exact one-sided 95 percent zero-failure upper bound for every configured critical mechanism; 205 unit tests and all additional local mechanical gates pass."
     }
   ],
+  "pr007_exact_head_review_remediation": [
+    {
+      "review_id": "PR-007-9500b84bcb5c",
+      "finding_ids": ["EM-001"],
+      "severity": "P1",
+      "status": "mechanically_validated_pending_replacement_exact_head_review",
+      "validation": "Every holdout task has a signed owner-attested critical_opportunity_family; tasks sharing context provenance, authority boundary, injection source, secret, or failure trigger count once, any family failure fails the family, and every configured critical mechanism requires at least 29 independent families with an exact one-sided 95 percent zero-failure upper bound no greater than 0.10."
+    },
+    {
+      "review_id": "PR-007-9500b84bcb5c",
+      "finding_ids": ["SSO-001"],
+      "severity": "P1",
+      "status": "mechanically_validated_pending_replacement_exact_head_review",
+      "validation": "Schema 1.1 submissions require independent_from_authors true; normalized reviewer and adjudicator identities cannot collide with packet authors, and the exact frozen PR-001 schema-1.0 fingerprint remains compatible."
+    },
+    {
+      "review_id": "PR-007-9500b84bcb5c",
+      "finding_ids": ["EM-002"],
+      "severity": "P2",
+      "status": "mechanically_validated_pending_replacement_exact_head_review",
+      "validation": "The tracked PR-007 validation result records exact argv, declared tool-version probes, UTC timestamps, exit and timeout states, complete stream hashes, and a canonical tracked-plus-untracked worktree content projection; independent verification rejects drift, tampering, artifact-set changes, and exclusion widening."
+    },
+    {
+      "review_id": "PR-007-9500b84bcb5c",
+      "finding_ids": ["ENG-001", "SSO-002"],
+      "severity": "P2",
+      "status": "mechanically_validated_pending_replacement_exact_head_review",
+      "validation": "Provider, installer, and validator subprocesses require POSIX process isolation before attempts or installation mutation and terminate surviving process-group descendants after timeout, failure, or leader success; fork-based regressions cover each boundary. All 230 unit tests and additional local mechanical gates pass."
+    }
+  ],
   "merge_readiness": {
     "targeted_blockers_closed": false,
     "targeted_remediations_mechanically_validated": true,

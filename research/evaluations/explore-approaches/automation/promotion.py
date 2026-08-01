@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import csv
-import fcntl
 import io
 import json
 import os
@@ -15,6 +14,11 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - guarded by the explicit platform preflight
+    fcntl = None  # type: ignore[assignment]
 
 from .core import (
     PipelineError,
@@ -27,6 +31,7 @@ from .core import (
     load_json,
     parse_time,
     regular_files,
+    require_posix_process_isolation,
     run_command,
     sha256_file,
     sha256_json,
@@ -152,6 +157,9 @@ def _tree_hashes(root: Path) -> dict[str, str]:
 
 @contextmanager
 def installation_lock(skills_root: Path, skill_name: str) -> Iterator[None]:
+    require_posix_process_isolation("Skill installation locking")
+    if fcntl is None:
+        raise PipelineError("Skill installation locking requires POSIX fcntl support")
     _assert_safe_descendant(skills_root, skills_root / f".{skill_name}.install.lock")
     lock_path = skills_root / f".{skill_name}.install.lock"
     try:
@@ -1124,6 +1132,8 @@ def _stage_install_source(
     """Stage either an explicit test copy or an exact-ref skill-installer download."""
     skills_root = staging.parent
     mode = _installation_source_mode(config)
+    if mode == "installer":
+        require_posix_process_isolation("Production skill-installer execution")
     if staging.exists():
         if _path_hashes(staging) != expected_hashes:
             raise PipelineError("Existing staging tree differs from immutable candidate")
@@ -1163,6 +1173,7 @@ def _stage_install_source(
             command,
             env={key: os.environ[key] for key in installer_env_allowlist if key in os.environ},
             inherit_env=False,
+            isolate_process_group=True,
         )
         downloaded = installer_root / skill_name
         if installer_root.is_symlink() or not installer_root.is_dir():
@@ -1189,6 +1200,7 @@ def run_canary(
     execution_authorization: dict[str, Any] | None = None,
     execution_authorization_sha256: str | None = None,
 ) -> dict[str, Any]:
+    require_posix_process_isolation("Provider-backed canary execution")
     if execution_authorization is None or not execution_authorization_sha256:
         raise PipelineError("Fresh provider-backed canary lacks signed execution authorization")
     skill_file = installed_skill / "SKILL.md"
@@ -1207,6 +1219,7 @@ def run_canary(
             if key in os.environ
         },
         inherit_env=False,
+        isolate_process_group=True,
     )
     if validation.returncode != 0:
         raise PipelineError(f"Installed skill failed static validation: {validation.stderr or validation.stdout}")
@@ -1308,6 +1321,7 @@ def atomic_install(
     *,
     canary: Callable[[Path, Path, dict[str, Any]], dict[str, Any]] = run_canary,
 ) -> dict[str, Any]:
+    require_posix_process_isolation("Skill promotion installation")
     installation = config["installation"]
     source_mode = _installation_source_mode(config)
     installer_script = str(Path(str(installation.get("installer_script", ""))).expanduser()) if source_mode == "installer" else None
@@ -1621,6 +1635,7 @@ def run_active_rollback_canary(
         raise PipelineError("Rollback canary observed a root state different from the recorded predecessor")
     if not expected_hashes:
         return {"status": "passed", "restored_previous": False, "file_hashes": {}}
+    require_posix_process_isolation("Rollback validator execution")
     validator_binding = verify_lifecycle_executable_binding(run_dir, config, "validator")
     allowlist = tuple(config["installation"].get("validator_env_allowlist", ()))
     validation = run_command(
@@ -1628,6 +1643,7 @@ def run_active_rollback_canary(
         check=False,
         env={key: os.environ[key] for key in allowlist if key in os.environ},
         inherit_env=False,
+        isolate_process_group=True,
     )
     if validation.returncode != 0:
         raise PipelineError(
@@ -1649,6 +1665,7 @@ def rollback_active_install(
 ) -> dict[str, Any]:
     """Quarantine an active candidate and atomically restore its recorded predecessor."""
 
+    require_posix_process_isolation("Skill promotion rollback")
     roles = role_bindings(config, require_resolved=True)
     if operator != roles["promotion_owner"]:
         raise PipelineError("Active rollback operator does not match the frozen promotion owner")

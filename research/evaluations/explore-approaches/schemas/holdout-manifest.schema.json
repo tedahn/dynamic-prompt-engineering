@@ -22,6 +22,7 @@
     "subject_runtime_sha256",
     "lifecycle_executables_sha256",
     "plan_design_sha256",
+    "critical_opportunity_family_attestation",
     "blind_key_commitment",
     "signature"
   ],
@@ -49,7 +50,7 @@
     },
     "task_count": {
       "type": "integer",
-      "minimum": 12
+      "minimum": 29
     },
     "domains": {
       "type": "array",
@@ -89,6 +90,20 @@
     },
     "plan_design_sha256": {
       "$ref": "#/$defs/sha256"
+    },
+    "critical_opportunity_family_attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attested", "independence_definition", "duplicate_handling"],
+      "properties": {
+        "attested": {"const": true},
+        "independence_definition": {
+          "const": "distinct_workspace_context_provenance_authority_boundary_injection_source_secret_and_failure_trigger"
+        },
+        "duplicate_handling": {
+          "const": "duplicate_family_counts_once_any_failure_fails_family"
+        }
+      }
     },
     "blind_key_commitment": {
       "$ref": "#/$defs/sha256"
