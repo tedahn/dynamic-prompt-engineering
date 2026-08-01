@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any, Iterable, Sequence
@@ -533,7 +534,7 @@ def _snapshot_posix_processes(*, include_environment: bool) -> dict[int, dict[st
     if ps_path is None:
         raise PipelineError("POSIX process containment requires an absolute ps executable")
     argv = [str(ps_path)]
-    if include_environment:
+    if include_environment and sys.platform == "darwin":
         argv.append("eww")
     argv.extend(["-axo", "pid=,ppid=,pgid=,sess=,lstart=,command="])
     try:
@@ -559,13 +560,20 @@ def _snapshot_posix_processes(*, include_environment: bool) -> dict[int, dict[st
             pid, parent_pid, process_group_id, session_id = (int(value) for value in parts[:4])
         except ValueError:
             continue
+        command = parts[9] if len(parts) == 10 else ""
+        if include_environment and sys.platform.startswith("linux"):
+            try:
+                environment = Path(f"/proc/{pid}/environ").read_bytes().replace(b"\x00", b" ")
+                command = f"{command} {environment.decode('utf-8', errors='replace')}"
+            except (OSError, PermissionError):
+                pass
         processes[pid] = {
             "pid": pid,
             "parent_pid": parent_pid,
             "process_group_id": process_group_id,
             "session_id": session_id,
             "started_at": " ".join(parts[4:9]),
-            "command": parts[9] if len(parts) == 10 else "",
+            "command": command,
         }
     if os.getpid() not in processes:
         raise PipelineError("POSIX process containment snapshot omitted the current process")
