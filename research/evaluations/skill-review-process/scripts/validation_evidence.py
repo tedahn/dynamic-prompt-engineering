@@ -419,7 +419,7 @@ def bind_dependency(
                 raise EvidenceError(f"projected file dependency is absent from the projection: {path}")
             identity: dict[str, Any] = {"projection_entry": matches[0]}
         else:
-            prefix = path.rstrip("/") + "/"
+            prefix = "" if path == "." else path.rstrip("/") + "/"
             matches = [entry for entry in entries if entry["path"].startswith(prefix)]
             if not matches:
                 raise EvidenceError(f"projected tree dependency is absent from the projection: {path}")

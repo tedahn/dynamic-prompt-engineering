@@ -1,0 +1,11 @@
+..............{"ok": false, "error": "PREFLIGHT-001 artifact hash mismatch: response_sha256"}
+{"ok": false, "error": "Preflight evidence seal mismatch"}
+{"ok": false, "error": "PREFLIGHT-001 completed status disagrees with final attempt"}
+{"ok": false, "error": "PREFLIGHT-001 attempt directory membership mismatch"}
+{"ok": false, "error": "PREFLIGHT-001 attempt 1 escapes its evidence root"}
+{"ok": false, "error": "Preflight manifest mismatch: completed_cells"}
+..................
+----------------------------------------------------------------------
+Ran 32 tests in 4.348s
+
+OK
