@@ -212,7 +212,7 @@
       "finding_ids": ["ENG-001", "SSO-002"],
       "severity": "P2",
       "status": "mechanically_validated_pending_replacement_exact_head_review",
-      "validation": "Provider, installer, and validator subprocesses require POSIX process isolation before attempts or installation mutation and terminate surviving process-group descendants after timeout, failure, or leader success; fork-based regressions cover each boundary. All 230 unit tests and additional local mechanical gates pass."
+      "validation": "Provider, installer, and validator subprocesses require POSIX process isolation before attempts or installation mutation and terminate surviving process-group descendants after timeout, failure, or leader success; fork-based regressions cover each boundary. All 241 unit tests and additional local mechanical gates pass."
     }
   ],
   "merge_readiness": {

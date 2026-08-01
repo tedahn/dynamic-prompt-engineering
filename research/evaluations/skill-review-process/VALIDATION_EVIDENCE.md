@@ -17,14 +17,14 @@ The recorded Git head is context, not the tested-tree identity. The content proj
 
 ## Run
 
-Pass commands as JSON objects. Argument arrays are executed directly without a shell. Every validation command must declare the version-probe names for the tools it uses. If an argument array invokes a wrapper, the operator must list every decision-relevant tool behind that wrapper.
+Pass commands as JSON objects. Argument arrays are executed directly without a shell or inherited environment. Executables must be absolute non-wrapper binaries. Every validation command must name its executable probe, declare every tool it uses, and bind every mutable projected or external file/tree dependency.
 
 ```sh
 python3 research/evaluations/skill-review-process/scripts/validation_evidence.py run \
   --repo-root . \
   --output-dir research/evaluations/skill-review-process/results/PR-NNN-validation \
-  --tool-version '{"name":"python","argv":["python3","--version"],"cwd":"."}' \
-  --command '{"name":"review-tests","argv":["python3","-m","unittest","discover","-s","research/evaluations/skill-review-process/tests"],"cwd":".","tools":["python"],"timeout_seconds":600}'
+  --tool-version '{"name":"python","argv":["/absolute/path/to/python3","--version"],"cwd":"."}' \
+  --command '{"name":"review-tests","argv":["/absolute/path/to/python3","-m","unittest","discover","-s","research/evaluations/skill-review-process/tests"],"cwd":".","tools":["python"],"executable_tool":"python","dependencies":[{"name":"review-tests","kind":"projected_tree","path":"research/evaluations/skill-review-process/tests"}],"timeout_seconds":600}'
 ```
 
 The command exits nonzero when a probe or validation command fails, times out, cannot launch, or changes projected source. It still writes the complete failed result. Do not discard or relabel that negative evidence.
@@ -45,7 +45,7 @@ Integrity-valid negative evidence returns verification success while reporting `
 ## Authority and limitations
 
 - The recorder runs only argument arrays explicitly supplied by the operator. It does not install, publish, deploy, promote, contact providers, or infer authority for those actions.
-- The inherited environment is used but variable values are not persisted because they may contain secrets. Put non-secret, decision-relevant configuration in versioned files or explicit arguments.
+- The child receives only the recorded deterministic base environment plus explicitly supplied non-secret variables. `PATH`, language module paths, shell startup hooks, and secret-like variable names are rejected.
 - Git-ignored files are outside the projection. A validation that depends on an ignored file must copy a safe, reviewable representation into the projected tree or record it as a separately hashed artifact.
 - Generated evidence paths must not preexist. The recorder refuses a non-empty output directory and never overwrites prior evidence.
 - A passing record establishes only that the named commands exited successfully against the recorded projection. It does not establish behavioral efficacy, generalization, or skill promotion eligibility.
