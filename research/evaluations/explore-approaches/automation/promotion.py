@@ -532,6 +532,11 @@ def prepare_clean_promotion(
     work_root.mkdir(parents=True, exist_ok=True)
     run_command(["git", "clone", "--no-checkout", promotion["repository_url"], str(clone)])
     run_command(["git", "config", "core.hooksPath", "/dev/null"], cwd=clone)
+    run_command(["git", "config", "user.name", "Governed Promotion"], cwd=clone)
+    run_command(
+        ["git", "config", "user.email", "governed-promotion@example.invalid"],
+        cwd=clone,
+    )
     run_command(["git", "fetch", "origin", promotion["base_branch"]], cwd=clone)
     belongs = run_command(
         ["git", "merge-base", "--is-ancestor", expected_base_commit, f"origin/{promotion['base_branch']}"],

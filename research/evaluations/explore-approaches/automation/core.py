@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import ctypes
 from datetime import datetime, timezone
 import fnmatch
 import hashlib
@@ -520,6 +521,7 @@ def assess_summary(summary: dict[str, Any], config: dict[str, Any]) -> dict[str,
 
 _PROCESS_CONTAINMENT_ENV = "CODEX_LIFECYCLE_PROCESS_TOKEN"
 _PROCESS_SNAPSHOT_TIMEOUT_SECONDS = 1.0
+_LINUX_PR_SET_CHILD_SUBREAPER = 36
 
 
 def _posix_ps_path() -> Path | None:
@@ -566,33 +568,7 @@ def _snapshot_posix_processes(
             continue
         command = parts[9] if len(parts) == 10 else ""
         containment_token: str | None = None
-        if (
-            include_environment
-            and sys.platform.startswith("linux")
-            and pid not in (environment_pid_baseline or set())
-        ):
-            try:
-                status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
-                uid_line = next(
-                    (line for line in status.splitlines() if line.startswith("Uid:")),
-                    None,
-                )
-                if uid_line is None or int(uid_line.split()[1]) != os.geteuid():
-                    raise StopIteration
-                prefix = f"{_PROCESS_CONTAINMENT_ENV}=".encode()
-                for entry in Path(f"/proc/{pid}/environ").read_bytes().split(b"\x00"):
-                    if entry.startswith(prefix):
-                        containment_token = entry[len(prefix) :].decode(
-                            "utf-8", errors="replace"
-                        )
-                        break
-            except (FileNotFoundError, ProcessLookupError, StopIteration):
-                pass
-            except (OSError, PermissionError, UnicodeError, ValueError) as exc:
-                raise PipelineError(
-                    "POSIX process containment could not inspect a same-user process environment"
-                ) from exc
-        elif include_environment and sys.platform == "darwin":
+        if include_environment and sys.platform == "darwin":
             marker = f"{_PROCESS_CONTAINMENT_ENV}="
             for token in command.split():
                 if token.startswith(marker):
@@ -638,6 +614,10 @@ def require_posix_process_isolation(context: str) -> None:
 
     if not _posix_process_isolation_available():
         raise PipelineError(f"{context} requires POSIX process-group isolation")
+    if sys.platform.startswith("linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(_LINUX_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+            raise PipelineError(f"{context} requires Linux child-subreaper containment")
     _snapshot_posix_processes(include_environment=False)
 
 
@@ -646,11 +626,18 @@ def _containment_members(
     *,
     process_group_id: int,
     token: str,
+    baseline_pids: set[int],
 ) -> tuple[dict[int, dict[str, Any]], bool]:
     members = {
         pid: process
         for pid, process in snapshot.items()
-        if pid == process_group_id or process.get("containment_token") == token
+        if pid == process_group_id
+        or process.get("containment_token") == token
+        or (
+            sys.platform.startswith("linux")
+            and pid not in baseline_pids
+            and process.get("parent_pid") == os.getpid()
+        )
     }
     changed = True
     while changed:
@@ -692,6 +679,7 @@ def _signal_containment(
             snapshot,
             process_group_id=process_group_id,
             token=token,
+            baseline_pids=baseline_pids,
         )
     except PipelineError:
         errors.append("process_snapshot_failed")
@@ -724,6 +712,7 @@ def _containment_remaining(
             snapshot,
             process_group_id=process_group_id,
             token=token,
+            baseline_pids=baseline_pids,
         )
     except PipelineError:
         errors.append("process_snapshot_failed")
@@ -887,6 +876,7 @@ def run_command(
                 snapshot,
                 process_group_id=process.pid,
                 token=containment_token,
+                baseline_pids=baseline_pids,
             )
         except PipelineError as exc:
             _stop_process_group(
