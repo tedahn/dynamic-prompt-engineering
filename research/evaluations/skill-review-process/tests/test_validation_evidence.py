@@ -355,6 +355,26 @@ class ValidationEvidenceTest(unittest.TestCase):
         self.assertFalse(verification["ok"])
         self.assertTrue(any("descriptor does not match" in error for error in verification["errors"]))
 
+    def test_passed_status_rejects_false_execution_hard_gates(self) -> None:
+        self._run()
+        result_path = self.output / "validation-result.json"
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        result["commands"][0]["executable_identity_matches_bound"] = False
+        result["commands"][0]["dependency_identities_match_bound"] = False
+        result["commands"][0]["process_group_empty_after_cleanup"] = False
+        VALIDATION.write_json(result_path, result)
+
+        verification = VALIDATION.verify_evidence(
+            self.repo,
+            self.output / "content-projection-manifest.json",
+            result_path,
+        )
+
+        self.assertFalse(verification["ok"])
+        self.assertTrue(
+            any("validation status is inconsistent" in error for error in verification["errors"])
+        )
+
     def test_exclusion_set_cannot_be_widened_to_hide_source(self) -> None:
         self._run()
         manifest_path = self.output / "content-projection-manifest.json"

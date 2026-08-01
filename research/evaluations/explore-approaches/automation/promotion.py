@@ -551,7 +551,20 @@ def prepare_clean_promotion(
     if not staged or set(staged) - set(allowed):
         raise PipelineError(f"Staged paths are empty or outside the allowlist: {sorted(set(staged) - set(allowed))}")
     run_command(["git", "diff", "--cached", "--check"], cwd=clone)
-    run_command(["git", "commit", "-m", promotion["commit_message"], "--no-verify"], cwd=clone)
+    run_command(
+        [
+            "git",
+            "-c",
+            "user.name=Governed Promotion",
+            "-c",
+            "user.email=governed-promotion@example.invalid",
+            "commit",
+            "-m",
+            promotion["commit_message"],
+            "--no-verify",
+        ],
+        cwd=clone,
+    )
     head_commit = run_command(["git", "rev-parse", "HEAD"], cwd=clone).stdout.strip()
     head_tree = run_command(["git", "rev-parse", "HEAD^{tree}"], cwd=clone).stdout.strip()
     return {

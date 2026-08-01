@@ -799,6 +799,8 @@ def run_validation(
         record["executable_identity_matches_bound"] = (
             executable_before == spec["executable_identity"] == executable_after
         )
+        record["dependencies"] = []
+        record["dependency_identities_match_bound"] = True
         record["environment_sha256"] = sha256_bytes(canonical_bytes(execution_environment))
         after_projection = build_projection(root, paths["excluded"])
         record["projection_sha256_before"] = before_projection["sha256"]
@@ -992,6 +994,7 @@ def execution_errors(rows: object, label: str) -> tuple[list[str], set[str], lis
             "cleanup_attempted",
             "process_group_empty_after_cleanup",
             "executable_identity_matches_bound",
+            "dependency_identities_match_bound",
         ):
             if not isinstance(row.get(boolean_field), bool):
                 errors.append(f"{prefix}.{boolean_field} must be boolean")
@@ -1293,6 +1296,9 @@ def verify_evidence(repo_root: Path, manifest_path: Path, result_path: Path) -> 
         row.get("execution_status") == "completed"
         and row.get("exit_code") == 0
         and row.get("projection_matches_tested") is True
+        and row.get("executable_identity_matches_bound") is True
+        and row.get("dependency_identities_match_bound") is True
+        and row.get("process_group_empty_after_cleanup") is True
         for row in tool_rows + command_rows
     )
     expected_status = (

@@ -561,12 +561,36 @@ def _snapshot_posix_processes(*, include_environment: bool) -> dict[int, dict[st
         except ValueError:
             continue
         command = parts[9] if len(parts) == 10 else ""
+        containment_token: str | None = None
         if include_environment and sys.platform.startswith("linux"):
             try:
-                environment = Path(f"/proc/{pid}/environ").read_bytes().replace(b"\x00", b" ")
-                command = f"{command} {environment.decode('utf-8', errors='replace')}"
-            except (OSError, PermissionError):
+                status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+                uid_line = next(
+                    (line for line in status.splitlines() if line.startswith("Uid:")),
+                    None,
+                )
+                if uid_line is None or int(uid_line.split()[1]) != os.geteuid():
+                    raise StopIteration
+                prefix = f"{_PROCESS_CONTAINMENT_ENV}=".encode()
+                for entry in Path(f"/proc/{pid}/environ").read_bytes().split(b"\x00"):
+                    if entry.startswith(prefix):
+                        containment_token = entry[len(prefix) :].decode(
+                            "utf-8", errors="replace"
+                        )
+                        break
+            except (FileNotFoundError, ProcessLookupError, StopIteration):
                 pass
+            except (OSError, PermissionError, UnicodeError, ValueError) as exc:
+                raise PipelineError(
+                    "POSIX process containment could not inspect a same-user process environment"
+                ) from exc
+        elif include_environment and sys.platform == "darwin":
+            marker = f"{_PROCESS_CONTAINMENT_ENV}="
+            for token in command.split():
+                if token.startswith(marker):
+                    containment_token = token[len(marker) :]
+                    break
+            command = ""
         processes[pid] = {
             "pid": pid,
             "parent_pid": parent_pid,
@@ -574,6 +598,7 @@ def _snapshot_posix_processes(*, include_environment: bool) -> dict[int, dict[st
             "session_id": session_id,
             "started_at": " ".join(parts[4:9]),
             "command": command,
+            "containment_token": containment_token,
         }
     if os.getpid() not in processes:
         raise PipelineError("POSIX process containment snapshot omitted the current process")
@@ -614,11 +639,10 @@ def _containment_members(
     process_group_id: int,
     token: str,
 ) -> tuple[dict[int, dict[str, Any]], bool]:
-    token_assignment = f"{_PROCESS_CONTAINMENT_ENV}={token}"
     members = {
         pid: process
         for pid, process in snapshot.items()
-        if pid == process_group_id or token_assignment in str(process.get("command", ""))
+        if pid == process_group_id or process.get("containment_token") == token
     }
     changed = True
     while changed:
