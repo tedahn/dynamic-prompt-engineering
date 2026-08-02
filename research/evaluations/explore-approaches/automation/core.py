@@ -681,6 +681,15 @@ def _signal_containment(
             token=token,
             baseline_pids=baseline_pids,
         )
+        for pid, member in list(members.items()):
+            if pid == process_group_id or member.get("parent_pid") != os.getpid():
+                continue
+            try:
+                reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+            except (ChildProcessError, ProcessLookupError):
+                reaped_pid = pid
+            if reaped_pid == pid:
+                members.pop(pid, None)
     except PipelineError:
         errors.append("process_snapshot_failed")
         members = {}
@@ -714,6 +723,15 @@ def _containment_remaining(
             token=token,
             baseline_pids=baseline_pids,
         )
+        for pid, member in list(members.items()):
+            if pid == process_group_id or member.get("parent_pid") != os.getpid():
+                continue
+            try:
+                reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+            except (ChildProcessError, ProcessLookupError):
+                reaped_pid = pid
+            if reaped_pid == pid:
+                members.pop(pid, None)
     except PipelineError:
         errors.append("process_snapshot_failed")
         return True, False
