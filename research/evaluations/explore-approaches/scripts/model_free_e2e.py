@@ -189,6 +189,9 @@ def run(output: Path) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="explore-e2e-") as temporary:
         temporary_root = Path(temporary)
         template_config = copy.deepcopy(config)
+        template_config["candidate"]["professionalize_skill_path"] = (
+            "skills/professionalize-prompt/SKILL.md"
+        )
         adapter = temporary_root / "model-free-adapter.py"
         adapter.write_text("# model-free provenance fixture\n", encoding="utf-8")
         adapter_argv = [

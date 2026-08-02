@@ -1,0 +1,17 @@
+✔ dashboard snapshot preserves the frozen evaluation identity (0.301208ms)
+✔ dashboard renders missing behavioral evidence as unknown (0.101042ms)
+✔ dashboard preserves the discarded preflight infrastructure boundary (0.044708ms)
+✔ dashboard covers current research registries (0.540292ms)
+✔ stateful loop keeps design evidence separate from behavioral results (0.076792ms)
+✔ stateful loop visualizes a frozen baseline, gated candidate, and human gate (0.067292ms)
+✔ context composer visualizes mechanical scores without claiming behavioral efficacy (0.064333ms)
+✔ dashboard provides semantic views and accessibility affordances (0.067833ms)
+✔ future score rows have a matrix rendering path (0.045167ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 35.163208

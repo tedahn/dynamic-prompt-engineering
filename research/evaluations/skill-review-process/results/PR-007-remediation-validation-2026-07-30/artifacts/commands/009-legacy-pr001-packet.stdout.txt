@@ -1,0 +1,39 @@
+{
+  "adjudicated_findings": 7,
+  "behavioral_efficacy": "unknown",
+  "completed_roles": [
+    "engineering-reproducibility",
+    "evidence-methodology",
+    "skill-safety-operations"
+  ],
+  "computed_merge_gate": "changes_required",
+  "decision_status": "provisional",
+  "errors": [],
+  "finding_counts": {
+    "P0": 0,
+    "P1": 3,
+    "P2": 4,
+    "P3": 0
+  },
+  "installation_ready": false,
+  "ok": true,
+  "promotion_ready": false,
+  "required_roles": [
+    "evidence-methodology",
+    "engineering-reproducibility",
+    "skill-safety-operations"
+  ],
+  "review_id": "PR-001-8371f0f9634b",
+  "schema_version": "1.0",
+  "target": {
+    "base_sha": "506850f0d4cf7b21990231b40c560864fd82e9e2",
+    "diff_sha256": "24048aec899e9298b8fa5b08893e428e9de03aba518f9a99431f565c9a7943ca",
+    "head_sha": "8371f0f9634bf86e3417bae09772418034239969"
+  },
+  "unresolved_blocking_findings": 3,
+  "warnings": [
+    "named-human merge decision is absent",
+    "behavioral efficacy is outside this review and remains unknown",
+    "promotion and installation require separate evidence and human gates"
+  ]
+}

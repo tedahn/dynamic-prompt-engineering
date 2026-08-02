@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import ctypes
 from datetime import datetime, timezone
 import fnmatch
 import hashlib
@@ -13,6 +14,7 @@ from pathlib import Path, PurePosixPath
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any, Iterable, Sequence
@@ -519,6 +521,7 @@ def assess_summary(summary: dict[str, Any], config: dict[str, Any]) -> dict[str,
 
 _PROCESS_CONTAINMENT_ENV = "CODEX_LIFECYCLE_PROCESS_TOKEN"
 _PROCESS_SNAPSHOT_TIMEOUT_SECONDS = 1.0
+_LINUX_PR_SET_CHILD_SUBREAPER = 36
 
 
 def _posix_ps_path() -> Path | None:
@@ -528,12 +531,16 @@ def _posix_ps_path() -> Path | None:
     return None
 
 
-def _snapshot_posix_processes(*, include_environment: bool) -> dict[int, dict[str, Any]]:
+def _snapshot_posix_processes(
+    *,
+    include_environment: bool,
+    environment_pid_baseline: set[int] | None = None,
+) -> dict[int, dict[str, Any]]:
     ps_path = _posix_ps_path()
     if ps_path is None:
         raise PipelineError("POSIX process containment requires an absolute ps executable")
     argv = [str(ps_path)]
-    if include_environment:
+    if include_environment and sys.platform == "darwin":
         argv.append("eww")
     argv.extend(["-axo", "pid=,ppid=,pgid=,sess=,lstart=,command="])
     try:
@@ -559,13 +566,25 @@ def _snapshot_posix_processes(*, include_environment: bool) -> dict[int, dict[st
             pid, parent_pid, process_group_id, session_id = (int(value) for value in parts[:4])
         except ValueError:
             continue
+        if sys.platform.startswith("linux") and not Path(f"/proc/{pid}").exists():
+            continue
+        command = parts[9] if len(parts) == 10 else ""
+        containment_token: str | None = None
+        if include_environment and sys.platform == "darwin":
+            marker = f"{_PROCESS_CONTAINMENT_ENV}="
+            for token in command.split():
+                if token.startswith(marker):
+                    containment_token = token[len(marker) :]
+                    break
+            command = ""
         processes[pid] = {
             "pid": pid,
             "parent_pid": parent_pid,
             "process_group_id": process_group_id,
             "session_id": session_id,
             "started_at": " ".join(parts[4:9]),
-            "command": parts[9] if len(parts) == 10 else "",
+            "command": command,
+            "containment_token": containment_token,
         }
     if os.getpid() not in processes:
         raise PipelineError("POSIX process containment snapshot omitted the current process")
@@ -597,6 +616,10 @@ def require_posix_process_isolation(context: str) -> None:
 
     if not _posix_process_isolation_available():
         raise PipelineError(f"{context} requires POSIX process-group isolation")
+    if sys.platform.startswith("linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(_LINUX_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+            raise PipelineError(f"{context} requires Linux child-subreaper containment")
     _snapshot_posix_processes(include_environment=False)
 
 
@@ -605,12 +628,18 @@ def _containment_members(
     *,
     process_group_id: int,
     token: str,
+    baseline_pids: set[int],
 ) -> tuple[dict[int, dict[str, Any]], bool]:
-    token_assignment = f"{_PROCESS_CONTAINMENT_ENV}={token}"
     members = {
         pid: process
         for pid, process in snapshot.items()
-        if pid == process_group_id or token_assignment in str(process.get("command", ""))
+        if pid == process_group_id
+        or process.get("containment_token") == token
+        or (
+            sys.platform.startswith("linux")
+            and pid not in baseline_pids
+            and process.get("parent_pid") == os.getpid()
+        )
     }
     changed = True
     while changed:
@@ -632,6 +661,7 @@ def _signal_containment(
     token: str,
     signal_number: int,
     errors: list[str],
+    baseline_pids: set[int],
 ) -> bool:
     escaped = False
     try:
@@ -643,12 +673,25 @@ def _signal_containment(
     except OSError:
         errors.append(f"signal_failed:process_group:{signal_number}")
     try:
-        snapshot = _snapshot_posix_processes(include_environment=True)
+        snapshot = _snapshot_posix_processes(
+            include_environment=True,
+            environment_pid_baseline=baseline_pids,
+        )
         members, escaped = _containment_members(
             snapshot,
             process_group_id=process_group_id,
             token=token,
+            baseline_pids=baseline_pids,
         )
+        for pid, member in list(members.items()):
+            if pid == process_group_id or member.get("parent_pid") != os.getpid():
+                continue
+            try:
+                reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+            except (ChildProcessError, ProcessLookupError):
+                reaped_pid = pid
+            if reaped_pid == pid:
+                members.pop(pid, None)
     except PipelineError:
         errors.append("process_snapshot_failed")
         members = {}
@@ -668,15 +711,29 @@ def _containment_remaining(
     process_group_id: int,
     token: str,
     errors: list[str],
+    baseline_pids: set[int],
 ) -> tuple[bool, bool]:
     group_exists = _process_group_exists(process_group_id)
     try:
-        snapshot = _snapshot_posix_processes(include_environment=True)
+        snapshot = _snapshot_posix_processes(
+            include_environment=True,
+            environment_pid_baseline=baseline_pids,
+        )
         members, escaped = _containment_members(
             snapshot,
             process_group_id=process_group_id,
             token=token,
+            baseline_pids=baseline_pids,
         )
+        for pid, member in list(members.items()):
+            if pid == process_group_id or member.get("parent_pid") != os.getpid():
+                continue
+            try:
+                reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+            except (ChildProcessError, ProcessLookupError):
+                reaped_pid = pid
+            if reaped_pid == pid:
+                members.pop(pid, None)
     except PipelineError:
         errors.append("process_snapshot_failed")
         return True, False
@@ -696,6 +753,7 @@ def _stop_process_group(
     process: subprocess.Popen[str],
     *,
     token: str,
+    baseline_pids: set[int],
     termination_grace_seconds: float,
     stdout: str = "",
     stderr: str = "",
@@ -709,11 +767,14 @@ def _stop_process_group(
         token,
         signal.SIGTERM,
         errors,
+        baseline_pids,
     )
     deadline = time.monotonic() + termination_grace_seconds
     remaining = True
     while remaining and time.monotonic() < deadline:
-        remaining, newly_escaped = _containment_remaining(process_group_id, token, errors)
+        remaining, newly_escaped = _containment_remaining(
+            process_group_id, token, errors, baseline_pids
+        )
         escaped = escaped or newly_escaped
         if remaining:
             time.sleep(0.01)
@@ -724,10 +785,13 @@ def _stop_process_group(
             token,
             signal.SIGKILL,
             errors,
+            baseline_pids,
         ) or escaped
     reap_deadline = time.monotonic() + max(termination_grace_seconds, 0.1)
     while remaining and time.monotonic() < reap_deadline:
-        remaining, newly_escaped = _containment_remaining(process_group_id, token, errors)
+        remaining, newly_escaped = _containment_remaining(
+            process_group_id, token, errors, baseline_pids
+        )
         escaped = escaped or newly_escaped
         if remaining:
             time.sleep(0.01)
@@ -747,7 +811,9 @@ def _stop_process_group(
             except subprocess.TimeoutExpired:
                 errors.append("leader_reap_timed_out")
     _close_process_pipes(process)
-    final_remaining, newly_escaped = _containment_remaining(process_group_id, token, errors)
+    final_remaining, newly_escaped = _containment_remaining(
+        process_group_id, token, errors, baseline_pids
+    )
     escaped = escaped or newly_escaped
     if final_remaining:
         errors.append("containment_members_survived")
@@ -779,6 +845,7 @@ def run_command(
         merged_env.update(env)
     if isolate_process_group:
         require_posix_process_isolation("Isolated command execution")
+        baseline_pids = set(_snapshot_posix_processes(include_environment=False))
         if env and _PROCESS_CONTAINMENT_ENV in env:
             raise PipelineError("Command environment may not override the process-containment token")
         containment_token = hashlib.sha256(os.urandom(32)).hexdigest()
@@ -802,6 +869,7 @@ def run_command(
             stdout, stderr, escaped = _stop_process_group(
                 process,
                 token=containment_token,
+                baseline_pids=baseline_pids,
                 termination_grace_seconds=termination_grace_seconds,
                 stdout=partial_stdout,
                 stderr=partial_stderr,
@@ -815,20 +883,26 @@ def run_command(
             _stop_process_group(
                 process,
                 token=containment_token,
+                baseline_pids=baseline_pids,
                 termination_grace_seconds=termination_grace_seconds,
             )
             raise
         try:
-            snapshot = _snapshot_posix_processes(include_environment=True)
+            snapshot = _snapshot_posix_processes(
+                include_environment=True,
+                environment_pid_baseline=baseline_pids,
+            )
             members, escaped = _containment_members(
                 snapshot,
                 process_group_id=process.pid,
                 token=containment_token,
+                baseline_pids=baseline_pids,
             )
         except PipelineError as exc:
             _stop_process_group(
                 process,
                 token=containment_token,
+                baseline_pids=baseline_pids,
                 termination_grace_seconds=termination_grace_seconds,
                 stdout=stdout,
                 stderr=stderr,
@@ -838,6 +912,7 @@ def run_command(
             _stop_process_group(
                 process,
                 token=containment_token,
+                baseline_pids=baseline_pids,
                 termination_grace_seconds=termination_grace_seconds,
                 stdout=stdout,
                 stderr=stderr,
