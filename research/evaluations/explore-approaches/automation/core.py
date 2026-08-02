@@ -566,6 +566,8 @@ def _snapshot_posix_processes(
             pid, parent_pid, process_group_id, session_id = (int(value) for value in parts[:4])
         except ValueError:
             continue
+        if sys.platform.startswith("linux") and not Path(f"/proc/{pid}").exists():
+            continue
         command = parts[9] if len(parts) == 10 else ""
         containment_token: str | None = None
         if include_environment and sys.platform == "darwin":
